@@ -95,6 +95,70 @@ def observability() -> dict:
     return _api("GET", "/api/observability/overview")
 
 
+def memories() -> dict:
+    """GET /api/memories — memory field state."""
+    return _api("GET", "/api/memories")
+
+
+def graph() -> dict:
+    """GET /api/graph — knowledge graph state."""
+    return _api("GET", "/api/graph")
+
+
+def graph_expand(entity: str) -> dict:
+    """GET /api/graph/expand — expand an entity with its relations."""
+    return _api("GET", "/api/graph/expand", params={"entity": entity})
+
+
+def recall(query: str, k: int = 6, mode: str = "fast") -> list[dict]:
+    """Semantic retrieval over Noesis memory + knowledge graph.
+
+    Searches both the graph entities and stored episodes
+    for content matching the query. Returns scored results.
+    """
+    results: list[dict] = []
+    query_lower = query.lower()
+
+    # 1. Search graph entities
+    try:
+        g = graph()
+        entities = g.get("graph", {}).get("entities", []) if "graph" in g else g.get("entities", [])
+        for e in entities:
+            name = (e.get("name", "") or "").lower()
+            desc = (e.get("description", "") or "").lower()
+            if query_lower in name or query_lower in desc:
+                results.append({
+                    "id": e.get("id", ""),
+                    "text": e.get("name", ""),
+                    "score": 1.0 if query_lower in name else 0.6,
+                    "source": "noesis:graph",
+                    "metadata": {"category": e.get("category", "")},
+                })
+    except Exception as exc:
+        logger.debug("graph recall failed: %s", exc)
+
+    # 2. Search episodes in memory
+    try:
+        m = memories()
+        episodes = m.get("state", {}).get("episodes", [])
+        for ep in episodes:
+            content = ep.get("content", "") or ""
+            if query_lower in content.lower():
+                results.append({
+                    "id": ep.get("id", ""),
+                    "text": content[:400],
+                    "score": 0.8,
+                    "source": "noesis:memory",
+                    "metadata": {"timestamp": str(ep.get("timestamp", ""))},
+                })
+    except Exception as exc:
+        logger.debug("memory recall failed: %s", exc)
+
+    # Sort by score descending, limit to k
+    results.sort(key=lambda x: x.get("score", 0), reverse=True)
+    return results[:k]
+
+
 def noesis_available() -> bool:
     """Check if the Noesis daemon is reachable."""
     try:

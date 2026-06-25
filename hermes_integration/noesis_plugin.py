@@ -114,23 +114,13 @@ class NoesisProvider(MemoryProvider):
         logger.info("NoesisProvider: 3 tools registered")
 
     def recall(self, query: str, k: int = 6, mode: str = "fast") -> list[dict]:
-        """Semantic retrieval over the knowledge base.
+        """Semantic retrieval over the Noesis knowledge graph + memory.
 
-        Delegates to the Noesis API's observability/stats endpoints.
-        Full semantic recall will use the knowledge graph + memory fields
-        once the Noesis REST API exposes those endpoints with real data.
+        Searches through graph entities and stored episodes for content
+        matching the query. Returns scored results with source metadata.
         """
         try:
-            obs = noesis.observability()
-            signals = noesis.signal_stats()
-            return [
-                {
-                    "id": "noesis-signals",
-                    "text": json.dumps(signals.get("signals", {})),
-                    "score": 1.0,
-                    "source": "noesis:observability",
-                },
-            ]
+            return noesis.recall(query, k=k, mode=mode)
         except Exception as e:
             logger.error("Noesis recall failed: %s", e)
             return []

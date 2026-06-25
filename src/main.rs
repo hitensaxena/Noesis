@@ -294,6 +294,7 @@ async fn run_daemon(enable_rest: bool, #[allow(unused_variables)] port: u16) -> 
     tracing::info!("[main] system ready — waiting for signals");
 
     let cascade_metrics = metrics.clone();
+    let cascade_fields = field_instances.clone();
     let cascade_handle = tokio::spawn(async move {
         use std::collections::VecDeque;
 
@@ -331,6 +332,9 @@ async fn run_daemon(enable_rest: bool, #[allow(unused_variables)] port: u16) -> 
 
                 let start = std::time::Instant::now();
 
+                // Clone signal for field dispatching
+                let signal_for_fields = signal.clone();
+
                 // Dispatch to matching processors
                 let emitted = processor_registry
                     .dispatch(&field_ctx, signal)
@@ -340,6 +344,15 @@ async fn run_daemon(enable_rest: bool, #[allow(unused_variables)] port: u16) -> 
 
                 // Record processor latencies
                 cascade_metrics.record_processor_latency("cascade.dispatch", elapsed);
+
+                // Also notify fields so they can update their state
+                if let Ok(mut fields) = cascade_fields.try_lock() {
+                    for field in fields.iter_mut() {
+                        if let Err(e) = field.handle_signal(&field_ctx, signal_for_fields.clone()).await {
+                            tracing::trace!("[Cascade] field {} error: {}", field.name(), e);
+                        }
+                    }
+                }
 
                 if emitted.is_empty() {
                     tracing::trace!("[Cascade] no processors emitted from {}", signal_type);
