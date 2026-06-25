@@ -75,3 +75,41 @@ impl Default for AwarenessField {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use crate::field::field::Field;
+    use crate::field::context::FieldContext;
+    use crate::storage::memory_store::MemoryStore;
+    use crate::eventbus::bus::EventBus;
+    use crate::signals::AttentionShifted;
+
+    #[tokio::test]
+    async fn test_awareness_field_init() {
+        let storage = Arc::new(MemoryStore::new());
+        let bus = Arc::new(EventBus::new());
+        let ctx = FieldContext::new(bus, storage);
+
+        let mut field = AwarenessField::new();
+        field.init(&ctx).await.unwrap();
+        assert_eq!(field.name(), "awareness");
+    }
+
+    #[tokio::test]
+    async fn test_awareness_field_handles_attention() {
+        let storage = Arc::new(MemoryStore::new());
+        let bus = Arc::new(EventBus::new());
+        let ctx = FieldContext::new(bus, storage);
+
+        let mut field = AwarenessField::new();
+        field.init(&ctx).await.unwrap();
+
+        let sig = AttentionShifted::new(
+            "Working on Noesis", 0.9, "New episode arrived",
+        );
+        let result = field.handle_signal(&ctx, Arc::new(sig)).await;
+        assert!(result.is_ok(), "should handle attention signals");
+    }
+}

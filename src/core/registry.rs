@@ -84,3 +84,39 @@ impl Default for Registry {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::eventbus::signal::SignalType;
+
+    #[test]
+    fn test_register_and_list_signals() {
+        let registry = Registry::new();
+        registry.register_signal(SignalType::new("test.signal"), "A test signal");
+        let signals = registry.list_signals();
+        assert_eq!(signals.len(), 1);
+        assert!(signals.iter().any(|(t, _)| t.0 == "test.signal"));
+    }
+
+    #[test]
+    fn test_register_and_list_fields() {
+        let registry = Registry::new();
+        registry.register_field("test", Box::new(|| Box::new(crate::fields::memory::MemoryField::new())));
+        let fields = registry.list_fields();
+        assert_eq!(fields.len(), 1);
+    }
+
+    #[test]
+    fn test_create_field_by_name() {
+        let registry = Registry::new();
+        registry.register_field("memory", Box::new(|| Box::new(crate::fields::memory::MemoryField::new())));
+
+        let field = registry.create_field("memory");
+        assert!(field.is_some());
+        assert_eq!(field.unwrap().name(), "memory");
+
+        let missing = registry.create_field("nonexistent");
+        assert!(missing.is_none());
+    }
+}

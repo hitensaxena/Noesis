@@ -107,3 +107,33 @@ impl Default for IdentityField {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use crate::field::field::Field;
+    use crate::field::context::FieldContext;
+    use crate::storage::memory_store::MemoryStore;
+    use crate::eventbus::bus::EventBus;
+    use crate::signals::{BeliefChanged, BeliefChangeType};
+
+    #[tokio::test]
+    async fn test_identity_field_stores_beliefs() {
+        let storage = Arc::new(MemoryStore::new());
+        let bus = Arc::new(EventBus::new());
+        let ctx = FieldContext::new(bus, storage);
+
+        let mut field = IdentityField::new();
+        field.init(&ctx).await.unwrap();
+
+        let bc = BeliefChanged::new("I value deep thinking", BeliefChangeType::Created, 0.9);
+        field.handle_signal(&ctx, Arc::new(bc)).await.unwrap();
+
+        // Downcast to access actual state
+        let state = field.state();
+        let state = state.downcast_ref::<IdentityFieldState>();
+        assert!(state.is_some(), "state should be IdentityFieldState");
+        assert_eq!(state.unwrap().beliefs.len(), 1, "should have 1 belief");
+    }
+}

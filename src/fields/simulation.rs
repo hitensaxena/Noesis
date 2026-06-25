@@ -74,3 +74,24 @@ impl Default for SimulationField {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use crate::field::field::Field;
+    use crate::field::context::FieldContext;
+    use crate::storage::memory_store::MemoryStore;
+    use crate::eventbus::bus::EventBus;
+
+    #[tokio::test]
+    async fn test_simulation_field_init() {
+        let storage = Arc::new(MemoryStore::new());
+        let bus = Arc::new(EventBus::new());
+        let ctx = FieldContext::new(bus, storage);
+
+        let mut field = SimulationField::new();
+        field.init(&ctx).await.unwrap();
+        assert_eq!(field.name(), "simulation");
+    }
+}

@@ -123,3 +123,58 @@ impl Default for GraphField {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use crate::field::field::Field;
+    use crate::field::context::FieldContext;
+    use crate::storage::memory_store::MemoryStore;
+    use crate::eventbus::bus::EventBus;
+    use crate::signals::graph::EntityCreated;
+    use crate::eventbus::signal::SignalMeta;
+    use crate::signals::types;
+
+    #[tokio::test]
+    async fn test_graph_field_init() {
+        let storage = Arc::new(MemoryStore::new());
+        let bus = Arc::new(EventBus::new());
+        let ctx = FieldContext::new(bus, storage);
+
+        let mut field = GraphField::new();
+        field.init(&ctx).await.unwrap();
+        assert_eq!(field.name(), "knowledge_graph");
+    }
+
+    #[tokio::test]
+    async fn test_graph_field_stores_entity() {
+        let storage = Arc::new(MemoryStore::new());
+        let bus = Arc::new(EventBus::new());
+        let ctx = FieldContext::new(bus, storage);
+
+        let mut field = GraphField::new();
+        field.init(&ctx).await.unwrap();
+
+        let entity = EntityCreated {
+            meta: SignalMeta::new(types::ENTITY_CREATED, "test"),
+            entity_id: uuid::Uuid::new_v4(),
+            name: "Noesis".to_string(),
+            category: "Project".to_string(),
+            source: "test".to_string(),
+        };
+        field.handle_signal(&ctx, Arc::new(entity)).await.unwrap();
+
+        let found = field.find_entity("Noesis");
+        assert!(found.is_some(), "should find entity by name");
+        assert_eq!(found.unwrap().name, "Noesis");
+    }
+
+    #[tokio::test]
+    async fn test_graph_field_snapshot() {
+        let field = GraphField::new();
+        let snapshot = field.snapshot();
+        assert_eq!(snapshot.entity_count, 0);
+        assert_eq!(snapshot.relation_count, 0);
+    }
+}

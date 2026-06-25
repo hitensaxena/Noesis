@@ -52,3 +52,26 @@ impl Default for Kernel {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_kernel_initialization() {
+        let mut kernel = Kernel::new();
+        assert_eq!(kernel.registry.list_fields().len(), 0);
+        assert_eq!(kernel.registry.list_processors().len(), 0);
+
+        let result = kernel.init().await;
+        assert!(result.is_ok(), "kernel init should succeed");
+    }
+
+    #[tokio::test]
+    async fn test_kernel_shutdown() {
+        let mut kernel = Kernel::new();
+        kernel.init().await.unwrap();
+        let result = kernel.shutdown().await;
+        assert!(result.is_ok(), "kernel shutdown should succeed");
+    }
+}

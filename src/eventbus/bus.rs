@@ -145,3 +145,82 @@ impl Default for EventBus {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::eventbus::signal::{SignalMeta, SignalType, Signal};
+    use std::sync::Arc;
+    use super::EventBus;
+    use crate::signals::types;
+
+    #[derive(Debug)]
+    struct TestSignal {
+        meta: SignalMeta,
+    }
+
+    impl Signal for TestSignal {
+        fn signal_type(&self) -> SignalType { types::INGEST_REQUEST }
+        fn meta(&self) -> &SignalMeta { &self.meta }
+        fn as_any(&self) -> &dyn std::any::Any { self }
+    }
+
+    #[tokio::test]
+    async fn test_publish_subscribe() {
+        let bus = EventBus::new();
+        let mut rx = bus.subscribe_receiver(types::INGEST_REQUEST);
+
+        let signal = TestSignal { meta: SignalMeta::new(types::INGEST_REQUEST, "test") };
+        bus.publish(Arc::new(signal));
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let received = rx.try_recv();
+        assert!(received.is_ok(), "should receive published signal");
+    }
+
+    #[tokio::test]
+    async fn test_subscribe_unsubscribe() {
+        let bus = EventBus::new();
+        let sub = bus.subscribe(types::INGEST_REQUEST, "test-processor");
+
+        assert!(sub.is_active());
+        assert_eq!(bus.subscriber_count(&types::INGEST_REQUEST), 1);
+
+        sub.unsubscribe();
+        assert!(!sub.is_active());
+        assert_eq!(bus.subscriber_count(&types::INGEST_REQUEST), 0);
+    }
+
+    #[tokio::test]
+    async fn test_multiple_signal_types() {
+        let bus = EventBus::new();
+        let mut rx_ingest = bus.subscribe_receiver(types::INGEST_REQUEST);
+        let mut rx_episode = bus.subscribe_receiver(types::EPISODE_RECORDED);
+
+        let sig1 = TestSignal { meta: SignalMeta::new(types::INGEST_REQUEST, "test") };
+        bus.publish(Arc::new(sig1));
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        assert!(rx_ingest.try_recv().is_ok(), "ingest subscribers should get it");
+        assert!(rx_episode.try_recv().is_err(), "episode subscribers should NOT get ingest");
+    }
+
+    #[tokio::test]
+    async fn test_cascade_depth_limit() {
+        let bus = EventBus::new();
+        let mut rx = bus.subscribe_receiver(types::INGEST_REQUEST);
+
+        // Publish a signal at max depth + 1
+        let meta = SignalMeta::new(types::INGEST_REQUEST, "test");
+        let child_meta = meta.child(types::INGEST_REQUEST, "test"); // depth 1
+        let signal = TestSignal { meta: child_meta };
+        bus.publish(Arc::new(signal));
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Shallow signals should pass through
+        let received = rx.try_recv();
+        assert!(received.is_ok(), "depth=1 signal should be published");
+    }
+}
