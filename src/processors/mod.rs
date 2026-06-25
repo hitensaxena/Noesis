@@ -7,3 +7,4 @@ pub mod attention;
 pub mod curiosity;
 pub mod extraction;
 pub mod consolidation;
+pub mod reflection;

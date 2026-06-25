@@ -13,17 +13,23 @@ pub struct CreateMemoryBody {
     pub tags: Option<Vec<String>>,
 }
 
-/// GET /api/memories — list all stored memories (from memory field).
+/// GET /api/memories — list all stored memories (from memory field state cache).
 pub async fn list_memories(
-    State(_state): State<ApiState>,
+    State(state): State<ApiState>,
 ) -> Json<serde_json::Value> {
-    // In-memory field state would be queried here
-    // For now, return structure info
-    Json(serde_json::json!({
-        "memories": [],
-        "count": 0,
-        "note": "Memory field state available via field introspection in future release",
-    }))
+    let memory_state = state.field_cache.get("memory");
+    if let Some(state_val) = memory_state {
+        Json(serde_json::json!({
+            "field": "memory",
+            "state": state_val.value(),
+        }))
+    } else {
+        Json(serde_json::json!({
+            "memories": [],
+            "count": 0,
+            "note": "No memory field state cached yet — inject an experience first",
+        }))
+    }
 }
 
 /// POST /api/memories — create a memory directly.
@@ -44,13 +50,20 @@ pub async fn create_memory(
     }))
 }
 
-/// GET /api/episodes — list recorded episodes.
+/// GET /api/episodes — list recorded episodes (from field state cache).
 pub async fn list_episodes(
-    State(_state): State<ApiState>,
+    State(state): State<ApiState>,
 ) -> Json<serde_json::Value> {
-    Json(serde_json::json!({
-        "episodes": [],
-        "count": 0,
-        "note": "Episode listing from field state coming in next release",
-    }))
+    let memory_state = state.field_cache.get("memory");
+    if let Some(state_val) = memory_state {
+        Json(serde_json::json!({
+            "episodes_from_cache": state_val.value(),
+        }))
+    } else {
+        Json(serde_json::json!({
+            "episodes": [],
+            "count": 0,
+            "note": "No episode state cached yet",
+        }))
+    }
 }

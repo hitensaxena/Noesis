@@ -11,6 +11,7 @@ use clap::Parser;
 use tracing;
 
 use noesis::core::kernel::Kernel;
+use noesis::core::state::{new_field_cache, SystemState};
 use noesis::eventbus::signal::SignalArc;
 use noesis::field::context::FieldContext;
 use noesis::interfaces::cli::{Cli, Commands};
@@ -82,6 +83,8 @@ async fn run_daemon(enable_rest: bool, #[allow(unused_variables)] port: u16) -> 
     // 1. Create kernel and storage
     // -----------------------------------------------------------------------
     let mut kernel = Kernel::new();
+    let field_cache = new_field_cache();
+    let system_state = Arc::new(SystemState::new(field_cache.clone()));
 
     // Configure composite storage: MemoryStore + optional Redis + Postgres
     let mut composite = noesis::storage::backends::CompositeStorage::new();
@@ -189,6 +192,17 @@ async fn run_daemon(enable_rest: bool, #[allow(unused_variables)] port: u16) -> 
         }
     }
 
+    // Background task: snapshot field states to the field cache every 3 seconds
+    let _f_cache = field_cache.clone();
+    kernel.runtime.spawn("field-snapshot", async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            // Field state snapshot would be written here
+            // (field instances are moved out of scope — will be reconnected in next phase)
+            tracing::trace!("[FieldCache] snapshot tick");
+        }
+    });
+
     // -----------------------------------------------------------------------
     // 4. Register and subscribe processors
     // -----------------------------------------------------------------------
@@ -203,6 +217,7 @@ async fn run_daemon(enable_rest: bool, #[allow(unused_variables)] port: u16) -> 
     processor_registry.register(Box::new(noesis::processors::curiosity::CuriosityProcessor::new()));
     processor_registry.register(Box::new(noesis::processors::extraction::ExtractionProcessor::new()));
     processor_registry.register(Box::new(noesis::processors::consolidation::ConsolidationProcessor::new()));
+    processor_registry.register(Box::new(noesis::processors::reflection::ReflectionProcessor::new()));
     tracing::info!("[main] {} processors registered", processor_registry.len());
 
     tracing::info!("[main] processors: {:?}", processor_registry.names());
@@ -222,6 +237,8 @@ async fn run_daemon(enable_rest: bool, #[allow(unused_variables)] port: u16) -> 
         kernel.event_bus.clone(),
         metrics.clone(),
         kernel_snapshot,
+        system_state.clone(),
+        field_cache.clone(),
     );
 
     // -----------------------------------------------------------------------

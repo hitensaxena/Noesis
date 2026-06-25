@@ -25,6 +25,7 @@ use tower_http::cors::CorsLayer;
 use crate::eventbus::bus::EventBus;
 use crate::metrics::metrics::MetricsCollector;
 use crate::eventbus::signal::SignalType;
+use crate::core::state::{SystemState, FieldStateCache};
 
 // Re-export handler functions for the router builder
 use handlers::health::health;
@@ -51,6 +52,8 @@ pub struct ApiState {
     pub event_bus: Arc<EventBus>,
     pub metrics: Arc<MetricsCollector>,
     pub kernel: Arc<tokio::sync::Mutex<KernelSnapshot>>,
+    pub system_state: Arc<SystemState>,
+    pub field_cache: FieldStateCache,
 }
 
 impl ApiState {
@@ -58,11 +61,15 @@ impl ApiState {
         event_bus: Arc<EventBus>,
         metrics: Arc<MetricsCollector>,
         kernel: KernelSnapshot,
+        system_state: Arc<SystemState>,
+        field_cache: FieldStateCache,
     ) -> Self {
         Self {
             event_bus,
             metrics,
             kernel: Arc::new(tokio::sync::Mutex::new(kernel)),
+            system_state,
+            field_cache,
         }
     }
 
