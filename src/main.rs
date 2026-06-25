@@ -19,6 +19,8 @@ use noesis::signals::types;
 use noesis::signals::IngestRequest;
 use noesis::storage::memory_store::MemoryStore;
 use noesis::storage::event_store::{EventStore, MemoryEventStore};
+use noesis::metrics::metrics::MetricsCollector;
+use noesis::interfaces::rest::{ApiState, KernelSnapshot};
 
 /// All registered signal types that processors subscribe to.
 const ALL_SIGNAL_TYPES: &[noesis::eventbus::signal::SignalType] = &[
@@ -206,6 +208,23 @@ async fn run_daemon(enable_rest: bool, #[allow(unused_variables)] port: u16) -> 
     tracing::info!("[main] processors: {:?}", processor_registry.names());
 
     // -----------------------------------------------------------------------
+    // 4a. Wire metrics + API state
+    // -----------------------------------------------------------------------
+    let metrics = Arc::new(MetricsCollector::new());
+
+    let kernel_snapshot = KernelSnapshot {
+        fields: kernel.registry.list_fields(),
+        processors: processor_registry.names(),
+        signal_types: kernel.registry.list_signals(),
+    };
+
+    let api_state = ApiState::new(
+        kernel.event_bus.clone(),
+        metrics.clone(),
+        kernel_snapshot,
+    );
+
+    // -----------------------------------------------------------------------
     // 5. Create the signal processing cascade
     // -----------------------------------------------------------------------
     tracing::info!("[main] starting signal processing cascade...");
@@ -246,11 +265,8 @@ async fn run_daemon(enable_rest: bool, #[allow(unused_variables)] port: u16) -> 
     tracing::info!("[main] entering recursive cascade loop...");
     tracing::info!("[main] system ready — waiting for signals");
 
+    let cascade_metrics = metrics.clone();
     let cascade_handle = tokio::spawn(async move {
-        // Local queue for the recursive cascade.
-        // External signals arrive from signal_rx (EventBus → mpsc).
-        // Processors emit signals that go into this queue, NOT back to the EventBus.
-        // This gives us deterministic cascade control.
         use std::collections::VecDeque;
 
         let mut cascade_queue: VecDeque<SignalArc> = VecDeque::new();
@@ -276,16 +292,26 @@ async fn run_daemon(enable_rest: bool, #[allow(unused_variables)] port: u16) -> 
                 let signal_type = signal.signal_type();
                 let depth = signal.meta().depth;
 
+                // Record signal in metrics
+                cascade_metrics.record_signal(&signal_type.to_string());
+
                 tracing::info!(
                     "[Cascade] processing signal: {} (depth={})",
                     signal_type,
                     depth
                 );
 
+                let start = std::time::Instant::now();
+
                 // Dispatch to matching processors
                 let emitted = processor_registry
                     .dispatch(&field_ctx, signal)
                     .await;
+
+                let elapsed = start.elapsed().as_nanos() as u64;
+
+                // Record processor latencies
+                cascade_metrics.record_processor_latency("cascade.dispatch", elapsed);
 
                 if emitted.is_empty() {
                     tracing::trace!("[Cascade] no processors emitted from {}", signal_type);
@@ -299,6 +325,7 @@ async fn run_daemon(enable_rest: bool, #[allow(unused_variables)] port: u16) -> 
 
                 // Queue emitted signals for recursive processing
                 for sig in emitted {
+                    cascade_metrics.record_signal(&sig.signal_type().to_string());
                     cascade_queue.push_back(sig);
                 }
 
@@ -333,12 +360,10 @@ async fn run_daemon(enable_rest: bool, #[allow(unused_variables)] port: u16) -> 
     }
 
     // -----------------------------------------------------------------------
-    // 7. REST API (optional, requires axum feature)
+    // 7. REST API — full HTTP surface
     // -----------------------------------------------------------------------
-    #[cfg(feature = "axum")]
     if enable_rest {
-        let rest_event_bus = kernel.event_bus.clone();
-        let app = noesis::interfaces::rest::router(rest_event_bus);
+        let app = noesis::interfaces::rest::router(api_state.clone());
         let addr = format!("127.0.0.1:{}", port);
         let listen_handle = tokio::spawn(async move {
             tracing::info!("[REST] API listening on {}", addr);
@@ -348,11 +373,6 @@ async fn run_daemon(enable_rest: bool, #[allow(unused_variables)] port: u16) -> 
         kernel.runtime.spawn("rest-api", async {
             listen_handle.await.ok();
         });
-    }
-
-    #[cfg(not(feature = "axum"))]
-    if enable_rest {
-        tracing::warn!("[REST] axum feature not enabled. Rebuild with --features axum to enable REST API.");
     }
 
     // -----------------------------------------------------------------------
