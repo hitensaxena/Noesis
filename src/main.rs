@@ -183,23 +183,34 @@ async fn run_daemon(enable_rest: bool, #[allow(unused_variables)] port: u16) -> 
     tracing::info!("[main] {} fields registered", kernel.registry.list_fields().len());
 
     // Create and initialize field instances
-    let mut field_instances: Vec<Box<dyn noesis::field::field::Field>> = Vec::new();
+    // Wrap in Arc<Mutex> so the background snapshot task can access them
+    let field_instances: std::sync::Arc<tokio::sync::Mutex<Vec<Box<dyn noesis::field::field::Field>>>> =
+        std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
     for name in kernel.registry.list_fields() {
         if let Some(mut field) = kernel.registry.create_field(&name) {
             field.init(&field_ctx).await?;
             tracing::info!("[main] field initialized: {}", field.name());
-            field_instances.push(field);
+            field_instances.lock().await.push(field);
         }
     }
 
     // Background task: snapshot field states to the field cache every 3 seconds
-    let _f_cache = field_cache.clone();
+    let f_cache = field_cache.clone();
+    let f_instances = field_instances.clone();
     kernel.runtime.spawn("field-snapshot", async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-            // Field state snapshot would be written here
-            // (field instances are moved out of scope — will be reconnected in next phase)
-            tracing::trace!("[FieldCache] snapshot tick");
+            if let Ok(mut instances) = f_instances.try_lock() {
+                for field in instances.iter_mut() {
+                    let name = field.name().to_string();
+                    let state = field.state();
+                    // Try serializing common field states
+                    let json_val = try_serialize_field_state(&name, &*state);
+                    if let Some(val) = json_val {
+                        f_cache.insert(name, val);
+                    }
+                }
+            }
         }
     });
 
@@ -501,6 +512,31 @@ async fn run_inspect(target: &str, name: Option<&str>) -> Result<()> {
     // Placeholder — will query field states when the kernel is running
     tracing::info!("[inspect] use `noesis list` to see registered components");
     Ok(())
+}
+
+/// Try to serialize a field's state to JSON by downcasting to known types.
+fn try_serialize_field_state(name: &str, state: &dyn std::any::Any) -> Option<serde_json::Value> {
+    match name {
+        "memory" => state
+            .downcast_ref::<noesis::fields::memory::MemoryFieldState>()
+            .and_then(|s| serde_json::to_value(s).ok()),
+        "identity" => state
+            .downcast_ref::<noesis::fields::identity::IdentityFieldState>()
+            .and_then(|s| serde_json::to_value(s).ok()),
+        "executive" => state
+            .downcast_ref::<noesis::fields::executive::ExecutiveFieldState>()
+            .and_then(|s| serde_json::to_value(s).ok()),
+        "awareness" => state
+            .downcast_ref::<noesis::fields::awareness::AwarenessFieldState>()
+            .and_then(|s| serde_json::to_value(s).ok()),
+        "simulation" => state
+            .downcast_ref::<noesis::fields::simulation::SimulationFieldState>()
+            .and_then(|s| serde_json::to_value(s).ok()),
+        "knowledge_graph" => state
+            .downcast_ref::<noesis::engines::graph::types::GraphSnapshot>()
+            .and_then(|s| serde_json::to_value(s).ok()),
+        _ => None,
+    }
 }
 
 /// Create an event store from the available storage backend.
