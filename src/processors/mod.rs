@@ -5,3 +5,4 @@ pub mod narrative;
 pub mod goal;
 pub mod attention;
 pub mod curiosity;
+pub mod extraction;

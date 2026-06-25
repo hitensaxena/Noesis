@@ -2,11 +2,13 @@ pub mod memory;
 pub mod identity;
 pub mod executive;
 pub mod awareness;
+pub mod graph;
 
 pub use memory::*;
 pub use identity::*;
 pub use executive::*;
 pub use awareness::*;
+pub use graph::*;
 
 /// All signal type constants in the Noesis system.
 pub mod types {
@@ -32,6 +34,11 @@ pub mod types {
     pub const ATTENTION_SHIFTED: SignalType = SignalType::new("attention.shifted");
     pub const CURIOSITY_DETECTED: SignalType = SignalType::new("curiosity.detected");
     pub const NARRATIVE_GENERATED: SignalType = SignalType::new("narrative.generated");
+
+    // Graph
+    pub const ENTITY_CREATED: SignalType = SignalType::new("entity.created");
+    pub const EDGE_CREATED: SignalType = SignalType::new("edge.created");
+    pub const TRIPLES_EXTRACTED: SignalType = SignalType::new("triples.extracted");
 
     // Input
     pub const INGEST_REQUEST: SignalType = SignalType::new("ingest.request");
