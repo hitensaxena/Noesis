@@ -8,3 +8,4 @@ pub mod curiosity;
 pub mod extraction;
 pub mod consolidation;
 pub mod reflection;
+pub mod resolution;

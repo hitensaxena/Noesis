@@ -89,27 +89,36 @@ async fn run_daemon(enable_rest: bool, #[allow(unused_variables)] port: u16) -> 
     // Configure composite storage: MemoryStore + optional Redis + Postgres
     let mut composite = noesis::storage::backends::CompositeStorage::new();
 
-    // Try connecting to existing curlyos-core Postgres (port 54321)
+    // Try connecting to Postgres (curlyos-core container on :54321, or override via NOESIS_DATABASE_URL)
     #[cfg(feature = "postgres-redis")]
-    if let Ok(pg_config) = std::env::var("NOESIS_DATABASE_URL") {
-        let config: tokio_postgres::Config = pg_config.parse().unwrap_or_else(|_| {
-            let mut c = tokio_postgres::Config::new();
-            c.host("127.0.0.1").port(54321).dbname("curlyos");
-            c.user("curlyos").password(std::env::var("CURLYOS_PG_PASSWORD").unwrap_or_default());
-            c
-        });
+    {
+        let pg_url = std::env::var("NOESIS_DATABASE_URL").ok();
+        let config: tokio_postgres::Config = match pg_url {
+            Some(url) => {
+                url.parse().unwrap_or_else(|_| {
+                    let mut c = tokio_postgres::Config::new();
+                    c.host("127.0.0.1").port(54321).dbname("curlyos");
+                    c.user("curlyos").password(std::env::var("CURLYOS_PG_PASSWORD").unwrap_or_default());
+                    c
+                })
+            }
+            None => {
+                let mut c = tokio_postgres::Config::new();
+                c.host("127.0.0.1").port(54321).dbname("curlyos");
+                c.user("curlyos").password(std::env::var("CURLYOS_PG_PASSWORD").unwrap_or_else(|_| "curlyos".to_string()));
+                c
+            }
+        };
         match noesis::storage::backends::postgres_backend::PostgresBackend::connect(&config).await {
             Ok(pg) => {
                 composite.postgres = Some(Arc::new(pg));
                 tracing::info!("[main] connected to Postgres (:54321)");
             }
-            Err(e) => tracing::warn!("[main] Postgres unavailable (continuing with memory): {}", e),
+            Err(e) => tracing::info!("[main] Postgres unavailable (in-memory only): {}", e),
         }
-    } else {
-        tracing::info!("[main] NOESIS_DATABASE_URL not set — using in-memory storage");
     }
 
-    // Try connecting to existing curlyos-core Redis (port 6379)
+    // Try connecting to Redis (curlyos-core container on :6379, or override via REDIS_URL)
     #[cfg(feature = "postgres-redis")]
     {
         let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
@@ -118,7 +127,7 @@ async fn run_daemon(enable_rest: bool, #[allow(unused_variables)] port: u16) -> 
                 composite.redis = Some(Arc::new(redis));
                 tracing::info!("[main] connected to Redis (:6379)");
             }
-            Err(e) => tracing::warn!("[main] Redis unavailable (continuing without): {}", e),
+            Err(e) => tracing::info!("[main] Redis unavailable (in-memory only): {}", e),
         }
     }
 
@@ -195,20 +204,28 @@ async fn run_daemon(enable_rest: bool, #[allow(unused_variables)] port: u16) -> 
     }
 
     // Background task: snapshot field states to the field cache every 3 seconds
+    // and persist to Postgres/Redis if available
     let f_cache = field_cache.clone();
     let f_instances = field_instances.clone();
+    let f_storage = storage.clone();
     kernel.runtime.spawn("field-snapshot", async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-            if let Ok(mut instances) = f_instances.try_lock() {
-                for field in instances.iter_mut() {
+            // Collect serialized states while holding the lock
+            let snapshots: Vec<(String, serde_json::Value)> = if let Ok(mut instances) = f_instances.try_lock() {
+                instances.iter_mut().filter_map(|field| {
                     let name = field.name().to_string();
                     let state = field.state();
-                    // Try serializing common field states
-                    let json_val = try_serialize_field_state(&name, &*state);
-                    if let Some(val) = json_val {
-                        f_cache.insert(name, val);
-                    }
+                    try_serialize_field_state(&name, &*state).map(|val| (name, val))
+                }).collect()
+            } else {
+                Vec::new()
+            };
+            // Update cache and storage (no non-Send types here)
+            for (name, val) in &snapshots {
+                f_cache.insert(name.clone(), val.clone());
+                if let Err(e) = f_storage.set("field_state", name, val.clone()).await {
+                    tracing::trace!("[FieldCache] persist error for {}: {}", name, e);
                 }
             }
         }
@@ -229,9 +246,10 @@ async fn run_daemon(enable_rest: bool, #[allow(unused_variables)] port: u16) -> 
     processor_registry.register(Box::new(noesis::processors::extraction::ExtractionProcessor::new()));
     processor_registry.register(Box::new(noesis::processors::consolidation::ConsolidationProcessor::new()));
     processor_registry.register(Box::new(noesis::processors::reflection::ReflectionProcessor::new()));
+    processor_registry.register(Box::new(noesis::processors::resolution::EntityResolutionProcessor::new()));
     tracing::info!("[main] {} processors registered", processor_registry.len());
 
-    tracing::info!("[main] processors: {:?}", processor_registry.names());
+    tracing::info!("[main] {} processors: {:?}", processor_registry.len(), processor_registry.names());
 
     // -----------------------------------------------------------------------
     // 4a. Wire metrics + API state
