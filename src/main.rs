@@ -18,6 +18,7 @@ use noesis::processor::lifecycle::ProcessorRegistry;
 use noesis::signals::types;
 use noesis::signals::IngestRequest;
 use noesis::storage::memory_store::MemoryStore;
+use noesis::storage::event_store::{EventStore, MemoryEventStore};
 
 /// All registered signal types that processors subscribe to.
 const ALL_SIGNAL_TYPES: &[noesis::eventbus::signal::SignalType] = &[
@@ -33,6 +34,9 @@ const ALL_SIGNAL_TYPES: &[noesis::eventbus::signal::SignalType] = &[
     types::CURIOSITY_DETECTED,
     types::NARRATIVE_GENERATED,
     types::DECISION_EVALUATED,
+    types::ENTITY_CREATED,
+    types::EDGE_CREATED,
+    types::TRIPLES_EXTRACTED,
 ];
 
 #[tokio::main]
@@ -76,8 +80,67 @@ async fn run_daemon(enable_rest: bool, #[allow(unused_variables)] port: u16) -> 
     // 1. Create kernel and storage
     // -----------------------------------------------------------------------
     let mut kernel = Kernel::new();
-    let storage = Arc::new(MemoryStore::new());
+
+    // Configure composite storage: MemoryStore + optional Redis + Postgres
+    let mut composite = noesis::storage::backends::CompositeStorage::new();
+
+    // Try connecting to existing curlyos-core Postgres (port 54321)
+    #[cfg(feature = "postgres-redis")]
+    if let Ok(pg_config) = std::env::var("NOESIS_DATABASE_URL") {
+        let config: tokio_postgres::Config = pg_config.parse().unwrap_or_else(|_| {
+            let mut c = tokio_postgres::Config::new();
+            c.host("127.0.0.1").port(54321).dbname("curlyos");
+            c.user("curlyos").password(std::env::var("CURLYOS_PG_PASSWORD").unwrap_or_default());
+            c
+        });
+        match noesis::storage::backends::postgres_backend::PostgresBackend::connect(&config).await {
+            Ok(pg) => {
+                composite.postgres = Some(Arc::new(pg));
+                tracing::info!("[main] connected to Postgres (:54321)");
+            }
+            Err(e) => tracing::warn!("[main] Postgres unavailable (continuing with memory): {}", e),
+        }
+    } else {
+        tracing::info!("[main] NOESIS_DATABASE_URL not set — using in-memory storage");
+    }
+
+    // Try connecting to existing curlyos-core Redis (port 6379)
+    #[cfg(feature = "postgres-redis")]
+    {
+        let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+        match noesis::storage::backends::redis_backend::RedisBackend::connect(&redis_url, "noesis:").await {
+            Ok(redis) => {
+                composite.redis = Some(Arc::new(redis));
+                tracing::info!("[main] connected to Redis (:6379)");
+            }
+            Err(e) => tracing::warn!("[main] Redis unavailable (continuing without): {}", e),
+        }
+    }
+
+    let storage: Arc<dyn noesis::storage::store::Storage> = Arc::new(composite);
     let field_ctx = FieldContext::new(kernel.event_bus.clone(), storage.clone());
+
+    // Wire the EventBridge for signal persistence
+    let event_bridge = std::sync::Arc::new(noesis::storage::event_store::EventBridge::new());
+    if let Some(event_store) = create_event_store(storage.clone()) {
+        let _ = event_bridge.set_store(event_store).await;
+    }
+    kernel.runtime.spawn("event-bridge", {
+        let bus = kernel.event_bus.clone();
+        let bridge = event_bridge.clone();
+        async move {
+            // Subscribe to all signal types and persist them
+            for st in ALL_SIGNAL_TYPES {
+                let mut rx = bus.subscribe_receiver(st.clone());
+                let bridge = bridge.clone();
+                tokio::spawn(async move {
+                    while let Ok(sig) = rx.recv().await {
+                        bridge.persist_signal(&sig).await;
+                    }
+                });
+            }
+        }
+    });
 
     // -----------------------------------------------------------------------
     // 2. Register signal types with descriptions
@@ -97,6 +160,9 @@ async fn run_daemon(enable_rest: bool, #[allow(unused_variables)] port: u16) -> 
     kernel.registry.register_signal(types::ATTENTION_SHIFTED, "Attention shifted to a new focus");
     kernel.registry.register_signal(types::CURIOSITY_DETECTED, "A knowledge gap was detected");
     kernel.registry.register_signal(types::NARRATIVE_GENERATED, "A coherent narrative was generated");
+    kernel.registry.register_signal(types::ENTITY_CREATED, "A knowledge entity was created");
+    kernel.registry.register_signal(types::EDGE_CREATED, "A relation was created between entities");
+    kernel.registry.register_signal(types::TRIPLES_EXTRACTED, "Triples were extracted from content");
     tracing::info!("[main] {} signal types registered", kernel.registry.list_signals().len());
 
     // -----------------------------------------------------------------------
@@ -108,6 +174,7 @@ async fn run_daemon(enable_rest: bool, #[allow(unused_variables)] port: u16) -> 
     kernel.registry.register_field("executive", Box::new(|| Box::new(noesis::fields::executive::ExecutiveField::new())));
     kernel.registry.register_field("awareness", Box::new(|| Box::new(noesis::fields::awareness::AwarenessField::new())));
     kernel.registry.register_field("simulation", Box::new(|| Box::new(noesis::fields::simulation::SimulationField::new())));
+    kernel.registry.register_field("knowledge_graph", Box::new(|| Box::new(noesis::fields::graph::GraphField::new())));
     tracing::info!("[main] {} fields registered", kernel.registry.list_fields().len());
 
     // Create and initialize field instances
@@ -132,6 +199,8 @@ async fn run_daemon(enable_rest: bool, #[allow(unused_variables)] port: u16) -> 
     processor_registry.register(Box::new(noesis::processors::goal::GoalProcessor::new()));
     processor_registry.register(Box::new(noesis::processors::attention::AttentionProcessor::new()));
     processor_registry.register(Box::new(noesis::processors::curiosity::CuriosityProcessor::new()));
+    processor_registry.register(Box::new(noesis::processors::extraction::ExtractionProcessor::new()));
+    processor_registry.register(Box::new(noesis::processors::consolidation::ConsolidationProcessor::new()));
     tracing::info!("[main] {} processors registered", processor_registry.len());
 
     tracing::info!("[main] processors: {:?}", processor_registry.names());
@@ -395,6 +464,13 @@ async fn run_inspect(target: &str, name: Option<&str>) -> Result<()> {
     // Placeholder — will query field states when the kernel is running
     tracing::info!("[inspect] use `noesis list` to see registered components");
     Ok(())
+}
+
+/// Create an event store from the available storage backend.
+fn create_event_store(_storage: Arc<dyn noesis::storage::store::Storage>) -> Option<std::sync::Arc<dyn EventStore>> {
+    // For now, always create an in-memory event store
+    // In the future, this could use Postgres or Redis
+    Some(std::sync::Arc::new(MemoryEventStore::new()))
 }
 
 /// List registered components.

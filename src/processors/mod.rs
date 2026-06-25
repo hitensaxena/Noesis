@@ -6,3 +6,4 @@ pub mod goal;
 pub mod attention;
 pub mod curiosity;
 pub mod extraction;
+pub mod consolidation;
