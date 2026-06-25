@@ -1,7 +1,7 @@
 //! Processors screen — processor list with dispatch stats and latency.
 
 use ratatui::{
-    style::{Modifier, Style, Stylize},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Paragraph},
     layout::{Constraint, Direction, Layout, Rect},

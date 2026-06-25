@@ -6,7 +6,7 @@ use ratatui::{
     Terminal,
     backend::Backend,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Modifier, Style, Stylize},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Paragraph, Tabs},
     Frame,

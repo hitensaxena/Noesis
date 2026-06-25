@@ -1,7 +1,7 @@
 //! Signals screen — signal types and per-type counts.
 
 use ratatui::{
-    style::{Modifier, Style, Stylize},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Paragraph},
     layout::{Constraint, Direction, Layout, Rect},

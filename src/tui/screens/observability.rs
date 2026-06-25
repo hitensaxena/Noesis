@@ -1,7 +1,7 @@
 //! Observability screen — system health, metrics traces.
 
 use ratatui::{
-    style::{Style, Stylize},
+    style::Style,
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Paragraph},
     layout::{Constraint, Direction, Layout, Rect},

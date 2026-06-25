@@ -1,7 +1,7 @@
 //! Dashboard screen — system overview at a glance.
 
 use ratatui::{
-    style::{Modifier, Style, Stylize},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Paragraph},
     layout::{Constraint, Direction, Layout, Rect},

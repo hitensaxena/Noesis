@@ -1,7 +1,7 @@
 //! Fields screen — field registrations and state.
 
 use ratatui::{
-    style::{Modifier, Style, Stylize},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Paragraph},
     layout::Rect,
