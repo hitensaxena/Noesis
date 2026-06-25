@@ -16,6 +16,7 @@ pub mod processors;
 pub mod storage;
 pub mod interfaces;
 pub mod metrics;
+pub mod engines;
 
 // Re-export key types for convenience
 pub use core::kernel::Kernel;
