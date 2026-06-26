@@ -1,28 +1,17 @@
 [Unit]
 Description=Noesis — Decentralized Cognitive Architecture
-Documentation=https://github.com/user/noesis
-After=network.target
+Documentation=https://github.com/hitensaxena/Noesis
+After=network.target docker.service
+Requires=docker.service
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/noesis start --rest --port 8080 --mcp --mcp-port 8645
+User=hitensaxena
+ExecStart=/Users/hitensaxena/.cargo/bin/cargo run --release --bin noesis -- start --rest --port 8647 --storage postgres --database-url "host=127.0.0.1 port=5433 dbname=noesis user=noesis password=noesis" --redis-url "redis://127.0.0.1:6380"
+WorkingDirectory=/Users/hitensaxena/noesis
 Restart=on-failure
 RestartSec=5
-StandardOutput=journal
-StandardError=journal
 Environment=RUST_LOG=noesis=info
-Environment=NOESIS_API_KEY=
-# Uncomment to enable Postgres persistence:
-# Environment=DATABASE_URL=postgres://noesis:noesis@localhost:5432/noesis
-# Uncomment to enable Redis caching:
-# Environment=REDIS_URL=redis://localhost:6379
-
-# Security hardening
-NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=true
-PrivateTmp=true
-ReadWritePaths=/var/lib/noesis
 
 [Install]
 WantedBy=multi-user.target

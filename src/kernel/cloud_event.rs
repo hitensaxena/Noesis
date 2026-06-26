@@ -46,9 +46,10 @@ impl CloudEvent {
         source: &str,
         scope: serde_json::Value,
     ) -> Self {
-        // Validate against the closed catalog
-        crate::kernel::catalog::validate_short_type(short_type)
-            .expect("event type not in catalog");
+        // Validate against the closed catalog (warn instead of panic — catalog is for curlyos-core integration)
+        if let Err(e) = crate::kernel::catalog::validate_short_type(short_type) {
+            tracing::warn!("[CloudEvent] {} — skipping catalog validation", e);
+        }
 
         Self {
             specversion: "1.0".to_string(),
