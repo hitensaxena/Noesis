@@ -8,8 +8,8 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::eventbus::cloud_event::CloudEvent;
-use crate::eventbus::signal::SignalArc;
+use crate::kernel::cloud_event::CloudEvent;
+use crate::kernel::signal::SignalArc;
 
 /// A stored event record.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,6 +80,263 @@ impl MemoryEventStore {
 impl Default for MemoryEventStore {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// File-backed event store using append-only JSONL format.
+///
+/// Each event is stored as a single JSON line. The file is appended to
+/// sequentially. On startup, the store replays the file to populate its
+/// in-memory index. This provides crash-safe persistence without requiring
+/// Postgres.
+pub struct FileEventStore {
+    /// Path to the JSONL event log.
+    path: std::path::PathBuf,
+    /// In-memory event index for fast lookup.
+    events: tokio::sync::Mutex<Vec<StoredEvent>>,
+    /// File handle for appending (opened once).
+    file: tokio::sync::Mutex<std::fs::File>,
+    seq: std::sync::atomic::AtomicU64,
+    /// Maximum file size before rotation (default 100MB).
+    max_size: u64,
+}
+
+impl FileEventStore {
+    /// Create or open a file-backed event store.
+    ///
+    /// If the file exists, it is replayed to populate the in-memory index.
+    /// If it doesn't exist, a new file is created.
+    pub fn new(path: impl Into<std::path::PathBuf>) -> Result<Self, Box<dyn std::error::Error>> {
+        let path = path.into();
+        tracing::info!("[FileEventStore] opening event log: {}", path.display());
+
+        // Create parent directories if needed
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        // Open file for append (create if not exists)
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .read(true)
+            .open(&path)?;
+        let file_size = file.metadata()?.len();
+
+        // Parse existing events to initialize in-memory state
+        let mut events = Vec::new();
+        if file_size > 0 {
+            let content = std::fs::read_to_string(&path)?;
+            for line in content.lines() {
+                if !line.trim().is_empty() {
+                    if let Ok(event) = serde_json::from_str::<StoredEvent>(line) {
+                        events.push(event);
+                    }
+                }
+            }
+        }
+
+        let seq = events.len() as u64;
+
+        Ok(Self {
+            path,
+            events: tokio::sync::Mutex::new(events),
+            file: tokio::sync::Mutex::new(file),
+            seq: std::sync::atomic::AtomicU64::new(seq),
+            max_size: 100 * 1024 * 1024, // 100 MB default
+        })
+    }
+
+    /// Set the maximum file size before auto-rotation.
+    pub fn with_max_size(mut self, bytes: u64) -> Self {
+        self.max_size = bytes;
+        self
+    }
+
+    /// Check if the file needs rotation and handle it.
+    fn check_rotation(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let metadata = std::fs::metadata(&self.path)?;
+        if metadata.len() >= self.max_size {
+            let rotated = self.path.with_extension("jsonl.old");
+            std::fs::rename(&self.path, &rotated)?;
+            let new_file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.path)?;
+            *self.file.blocking_lock() = new_file;
+            tracing::info!("[FileEventStore] rotated log: {} -> {}", self.path.display(), rotated.display());
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl EventStore for FileEventStore {
+    async fn append(&self, event: CloudEvent) -> u64 {
+        let seq = self.seq.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        let stored = StoredEvent {
+            seq,
+            id: event.id,
+            event_type: event.event_type,
+            source: event.source,
+            subject: event.subject,
+            time: chrono::Utc::now(),
+            data: event.data,
+            actor: event.actor,
+            scope: event.scope,
+        };
+
+        // Append to file
+        {
+            let mut file = self.file.lock().await;
+            use std::io::Write;
+            let _ = writeln!(file, "{}", serde_json::to_string(&stored).unwrap_or_default());
+            let _ = file.flush();
+        }
+
+        // Check if file needs rotation after write
+        if let Err(e) = self.check_rotation() {
+            tracing::warn!("[FileEventStore] rotation check failed: {}", e);
+        }
+
+        // Index in memory
+        let mut events = self.events.lock().await;
+        events.push(stored);
+        seq
+    }
+
+    async fn get(&self, seq: u64) -> Option<StoredEvent> {
+        let events = self.events.lock().await;
+        if seq == 0 || seq > events.len() as u64 {
+            return None;
+        }
+        events.get((seq - 1) as usize).cloned()
+    }
+
+    async fn get_by_id(&self, id: &str) -> Option<StoredEvent> {
+        let events = self.events.lock().await;
+        events.iter().find(|e| e.id == id).cloned()
+    }
+
+    async fn list(&self, from_seq: u64, limit: u64, event_type: Option<&str>) -> Vec<StoredEvent> {
+        let events = self.events.lock().await;
+        events.iter()
+            .skip((from_seq.saturating_sub(1)) as usize)
+            .filter(|e| event_type.map_or(true, |t| e.event_type == t))
+            .take(limit as usize)
+            .cloned()
+            .collect()
+    }
+
+    async fn list_by_subject(&self, subject: &str, limit: u64) -> Vec<StoredEvent> {
+        let events = self.events.lock().await;
+        events.iter()
+            .filter(|e| e.subject == subject)
+            .rev()
+            .take(limit as usize)
+            .cloned()
+            .collect()
+    }
+
+    async fn count(&self) -> u64 {
+        let events = self.events.lock().await;
+        events.len() as u64
+    }
+
+    async fn latest_seq(&self) -> u64 {
+        self.seq.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    async fn list_types(&self) -> Vec<String> {
+        let events = self.events.lock().await;
+        let mut types: Vec<String> = events.iter().map(|e| e.event_type.clone()).collect();
+        types.sort();
+        types.dedup();
+        types
+    }
+}
+
+#[cfg(test)]
+mod file_tests {
+    use super::*;
+    use crate::kernel::cloud_event::CloudEvent;
+
+    fn make_event(id: &str, _event_type: &str) -> CloudEvent {
+        // Use a valid catalog event type to avoid catalog validation panic.
+        // Override the generated ID with the provided one for test assertions.
+        let mut evt = CloudEvent::new(
+            "memory.episode.recorded", "test-subject",
+            serde_json::json!({"key": "value"}),
+            "test", "noesis",
+            serde_json::json!({"level": "user"}),
+        );
+        evt.id = id.to_string();
+        evt
+    }
+
+    fn make_event_no_id() -> CloudEvent {
+        CloudEvent::new(
+            "memory.episode.recorded", "test-subject",
+            serde_json::json!({"key": "value"}),
+            "test", "noesis",
+            serde_json::json!({"level": "user"}),
+        )
+    }
+
+    #[tokio::test]
+    async fn test_file_store_append_and_read() {
+        let tmp = std::env::temp_dir().join(format!("noesis_events_test_{}", std::process::id()));
+        let _ = std::fs::remove_file(&tmp);
+
+        let store = FileEventStore::new(&tmp).unwrap();
+        let seq = store.append(make_event("evt-1", "test.type")).await;
+        assert_eq!(seq, 1);
+
+        let retrieved = store.get(seq).await.unwrap();
+        assert_eq!(retrieved.id, "evt-1");
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[tokio::test]
+    async fn test_file_store_survives_restart() {
+        let tmp = std::env::temp_dir().join(format!("noesis_events_restart_{}", std::process::id()));
+        let _ = std::fs::remove_file(&tmp);
+
+        // Write some events (scope ensures file handle is closed)
+        let id_a;
+        let id_b;
+        {
+            let store = FileEventStore::new(&tmp).unwrap();
+            id_a = store.append(make_event("evt-a", "type.a")).await;
+            id_b = store.append(make_event("evt-b", "type.b")).await;
+        }
+
+        // Re-open — should replay events from file
+        let store2 = FileEventStore::new(&tmp).unwrap();
+        assert_eq!(store2.count().await, 2, "should replay 2 events from file");
+
+        let evt_a = store2.get(id_a).await.unwrap();
+        assert_eq!(evt_a.id, "evt-a");
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[tokio::test]
+    async fn test_file_store_list_all() {
+        let tmp = std::env::temp_dir().join(format!("noesis_events_list2_{}", std::process::id()));
+        let _ = std::fs::remove_file(&tmp);
+
+        let store = FileEventStore::new(&tmp).unwrap();
+        store.append(make_event("a", "memory.episode.recorded")).await;
+        store.append(make_event("b", "memory.episode.recorded")).await;
+        store.append(make_event("c", "memory.episode.recorded")).await;
+
+        let all = store.list(1, 10, None).await;
+        assert_eq!(all.len(), 3, "should list all 3 events");
+        assert_eq!(all[0].id, "a");
+
+        let _ = std::fs::remove_file(&tmp);
     }
 }
 
@@ -217,7 +474,7 @@ impl Default for EventBridge {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::eventbus::cloud_event::CloudEvent;
+    use crate::kernel::cloud_event::CloudEvent;
 
     fn make_test_event() -> CloudEvent {
         CloudEvent::new(

@@ -13,7 +13,7 @@ use ratatui::{
 };
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 
-use super::app::{Screen, TuiApp};
+use super::app::{Screen, TuiApp, DETAIL_NAMES};
 use super::screens;
 use super::colors;
 
@@ -32,13 +32,41 @@ pub async fn run<B: Backend>(terminal: &mut Terminal<B>, app: &mut TuiApp) -> Re
                 if key.kind == KeyEventKind::Press {
                     match key.code {
                         KeyCode::Char('q') | KeyCode::Esc => break,
-                        KeyCode::Char('l') | KeyCode::Right => app.next_screen(),
-                        KeyCode::Char('h') | KeyCode::Left => app.prev_screen(),
-                        KeyCode::Char('r') => app.refresh().await,
-                        KeyCode::Enter => {
-                            if let Screen::Log = app.screen {
-                                app.add_log("Manual refresh");
+                        KeyCode::Char('l') | KeyCode::Right => {
+                            if app.screen == Screen::Detail {
+                                app.next_detail();
+                            } else {
+                                app.next_screen();
                             }
+                        }
+                        KeyCode::Char('h') | KeyCode::Left => {
+                            if app.screen == Screen::Detail {
+                                app.prev_detail();
+                            } else {
+                                app.prev_screen();
+                            }
+                        }
+                        KeyCode::Char('j') | KeyCode::Down => {
+                            if app.screen == Screen::Detail {
+                                app.next_detail();
+                            }
+                        }
+                        KeyCode::Char('k') | KeyCode::Up => {
+                            if app.screen == Screen::Detail {
+                                app.prev_detail();
+                            }
+                        }
+                        KeyCode::Char('r') => app.refresh().await,
+                        KeyCode::Char('a') => {
+                            app.toggle_auto_refresh();
+                        }
+                        KeyCode::Char('+') | KeyCode::Char('=') => {
+                            app.set_refresh_interval(app.refresh_interval_secs() + 1);
+                        }
+                        KeyCode::Char('-') | KeyCode::Char('_') => {
+                            app.set_refresh_interval(app.refresh_interval_secs().saturating_sub(1).max(1));
+                        }
+                        KeyCode::Enter => {
                             app.refresh().await;
                         }
                         KeyCode::Tab => app.next_screen(),
@@ -48,8 +76,8 @@ pub async fn run<B: Backend>(terminal: &mut Terminal<B>, app: &mut TuiApp) -> Re
             }
         }
 
-        // Periodic refresh
-        if app.last_refresh.elapsed() >= refresh_interval {
+        // Periodic refresh (only if auto-refresh is enabled)
+        if app.auto_refresh && app.last_refresh.elapsed() >= refresh_interval {
             app.refresh().await;
         }
     }
@@ -147,15 +175,29 @@ fn render_content(f: &mut Frame, app: &TuiApp, area: Rect) {
         Screen::Processors => screens::processors::render(f, app, area),
         Screen::Observability => screens::observability::render(f, app, area),
         Screen::Log => screens::log::render(f, app, area),
+        Screen::Detail => screens::detail::render(f, app, area),
+        Screen::Settings => screens::settings::render(f, app, area),
     }
 }
 
 /// Render the status bar at the bottom.
 fn render_status_bar(f: &mut Frame, app: &TuiApp, area: Rect) {
+    let screen_label = match app.screen {
+        Screen::Detail => format!("{}({})", app.screen.name(), DETAIL_NAMES[app.detail_index]),
+        Screen::Settings => {
+            let auto = if app.auto_refresh { "ON" } else { "OFF" };
+            format!("Settings({}s, auto:{})", app.refresh_interval_secs(), auto)
+        }
+        _ => app.screen.name().to_string(),
+    };
+    let keys_hint = match app.screen {
+        Screen::Detail => " · ↑/↓ Detail · ",
+        Screen::Settings => " · +/- Interval · a Refresh · ",
+        _ => " · ",
+    };
     let status = format!(
-        " Status: {} | Screen: {} | Keys: ←/→ Tabs · r Refresh · q Quit",
-        app.status_message,
-        app.screen.name(),
+        " {} | {} | Keys: ←/→ Tab{}r Refresh · q Quit",
+        app.status_message, screen_label, keys_hint,
     );
     let bar = Paragraph::new(Line::from(vec![
         Span::raw(status),

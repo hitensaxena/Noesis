@@ -22,7 +22,7 @@ pub async fn overview(
         "service": "noesis",
         "version": "0.1.0",
         "uptime_seconds": uptime,
-        "fields": kernel.fields.len(),
+        "fields": state.field_cache.len(),
         "processors": kernel.processors.len(),
         "signal_types": kernel.signal_types.len(),
         "signals_processed": metrics["signals"],
@@ -53,5 +53,33 @@ pub async fn cascade_trace(
     Json(serde_json::json!({
         "recent_cascades": [],
         "note": "Cascade tracing coming in next release — tracks each signal chain through the processor network",
+    }))
+}
+
+/// GET /api/capabilities — list all registered capabilities from plugins.
+pub async fn capabilities(
+    State(state): State<ApiState>,
+) -> Json<serde_json::Value> {
+    let caps: Vec<serde_json::Value> = state.capability_registry.list().iter().filter_map(|id| {
+        let providers = state.capability_registry.find_providers(id);
+        if providers.is_empty() {
+            None
+        } else {
+            Some(serde_json::json!({
+                "id": id,
+                "available": true,
+                "providers": providers.iter().map(|c| serde_json::json!({
+                    "name": c.name,
+                    "description": c.description,
+                    "confidence": c.confidence,
+                    "processor": c.processor,
+                })).collect::<Vec<_>>(),
+            }))
+        }
+    }).collect();
+
+    Json(serde_json::json!({
+        "capabilities": caps,
+        "total": caps.len(),
     }))
 }

@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use axum::{Json, extract::State};
+use axum::{Json, extract::State, extract::Query};
 use serde::Deserialize;
 use tracing;
 
@@ -41,9 +41,8 @@ pub async fn inject_signal(
 ) -> Json<serde_json::Value> {
     tracing::info!("[REST] inject signal: {}", body.signal_type);
 
-    // For now, handle common signal types
     match body.signal_type.as_str() {
-        "ingest.request" => {
+        "memory.capture.ingested" => {
             let text = match &body.payload {
                 Some(payload) => payload.get("text").and_then(|v| v.as_str()).unwrap_or("injected via API"),
                 None => "injected via API",
@@ -65,14 +64,51 @@ pub async fn inject_signal(
     }))
 }
 
-/// GET /api/signals/history — recent signal history.
+#[derive(Deserialize)]
+pub struct HistoryQuery {
+    pub from_seq: Option<u64>,
+    pub limit: Option<u64>,
+    pub event_type: Option<String>,
+    /// Filter by field prefix (e.g. "memory" matches "memory.capture.ingested", "memory.consolidation.consolidated").
+    pub field: Option<String>,
+}
+
+/// GET /api/signals/history — recent signal history from event store.
 pub async fn signal_history(
-    State(_state): State<ApiState>,
+    State(state): State<ApiState>,
+    Query(params): Query<HistoryQuery>,
 ) -> Json<serde_json::Value> {
-    // Would query EventStore for recent events
-    Json(serde_json::json!({
-        "signals": [],
-        "count": 0,
-        "note": "Signal history from EventStore coming soon",
-    }))
+    let from_seq = params.from_seq.unwrap_or(1);
+    let limit = params.limit.unwrap_or(50).min(500);
+    let event_type = params.event_type.as_deref();
+    let field_prefix = params.field.as_deref();
+
+    match &state.event_store {
+        Some(store) => {
+            let events = store.list(from_seq, limit, event_type).await;
+            // Apply field prefix filtering in the handler (EventStore trait doesn't support prefix matching)
+            let filtered: Vec<_> = if let Some(field) = field_prefix {
+                let prefix = format!("{}.", field);
+                events.into_iter().filter(|e| e.event_type.starts_with(&prefix)).collect()
+            } else {
+                events
+            };
+            let count = store.count().await;
+            Json(serde_json::json!({
+                "signals": filtered,
+                "count": filtered.len(),
+                "total": count,
+                "from_seq": from_seq,
+                "limit": limit,
+                "field_filter": field_prefix,
+            }))
+        }
+        None => {
+            Json(serde_json::json!({
+                "signals": [],
+                "count": 0,
+                "note": "No event store configured. Start with --event-log <path> to enable persistence.",
+            }))
+        }
+    }
 }

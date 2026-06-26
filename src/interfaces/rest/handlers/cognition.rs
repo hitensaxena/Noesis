@@ -8,13 +8,13 @@ pub async fn meta(
 ) -> Json<serde_json::Value> {
     // Read from relevant field caches and compose a meta view
     let identity_state = state.field_cache.get("identity");
-    let executive_state = state.field_cache.get("executive");
+    let agency_state = state.field_cache.get("agency");
 
     let beliefs = identity_state
         .as_ref()
         .and_then(|v| v.value().get("beliefs").cloned())
         .unwrap_or(serde_json::json!([]));
-    let goals = executive_state
+    let goals = agency_state
         .as_ref()
         .and_then(|v| v.value().get("goals").cloned())
         .unwrap_or(serde_json::json!([]));

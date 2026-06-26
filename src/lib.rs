@@ -4,26 +4,25 @@
 //! Processors transform signals, and Signals are the only communication mechanism.
 //! No central controller. No god objects. Intelligence emerges from recursive signal propagation.
 
-pub mod core;
-pub mod eventbus;
-pub mod scheduler;
-pub mod field;
+#![recursion_limit = "256"]
+
+pub mod kernel;
+pub mod field_runtime;
 pub mod processor;
-pub mod plugin;
 pub mod signals;
 pub mod fields;
 pub mod processors;
 pub mod storage;
 pub mod interfaces;
-pub mod metrics;
 pub mod engines;
 pub mod tui;
+pub mod docs;
 
 // Re-export key types for convenience
-pub use core::kernel::Kernel;
-pub use core::registry::Registry;
-pub use eventbus::bus::EventBus;
-pub use eventbus::signal::{Signal, SignalArc, SignalMeta, SignalType};
-pub use field::field::Field;
-pub use field::context::FieldContext;
+pub use kernel::kernel::Kernel;
+pub use kernel::registry::Registry;
+pub use kernel::bus::EventBus;
+pub use kernel::signal::{Signal, SignalArc, SignalMeta, SignalType};
+pub use field_runtime::field::Field;
+pub use field_runtime::context::FieldContext;
 pub use processor::processor::Processor;

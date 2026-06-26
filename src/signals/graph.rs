@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::eventbus::signal::SignalMeta;
+use crate::kernel::signal::SignalMeta;
 use crate::signals::signal_impl;
 
 /// A knowledge entity was created in the graph.

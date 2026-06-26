@@ -1,14 +1,23 @@
 use async_trait::async_trait;
 use anyhow::Result;
 
-use crate::eventbus::signal::{SignalArc, SignalType};
-use crate::field::context::FieldContext;
+use crate::kernel::signal::{SignalArc, SignalType};
+use crate::field_runtime::context::FieldContext;
 
 /// A Processor performs exactly one cognitive transformation.
 ///
 /// Processors never invoke other processors — they subscribe to signals,
-/// perform their transformation, and emit new signals. They are stateless;
-/// all persistent state lives in Fields.
+/// perform their transformation, and emit new signals. They may keep
+/// ephemeral runtime state (counters, caches, recent context). All
+/// persistent state lives in Fields.
+///
+/// ## Attention Economy
+///
+/// Every processor has an `activation_threshold`. The EventBus filters
+/// incoming signals by comparing signal activation to this threshold.
+/// Signals with `activation < threshold` are silently skipped. This
+/// guarantees cascade convergence — no processor sees a signal that
+/// has decayed below its threshold.
 #[async_trait]
 pub trait Processor: Send + Sync {
     /// The unique name of this processor.
@@ -22,6 +31,15 @@ pub trait Processor: Send + Sync {
     /// Lower priority = processed first (0 is highest).
     fn priority(&self) -> u8 {
         100
+    }
+
+    /// Minimum activation required for this processor to process a signal.
+    ///
+    /// Signals with `meta.activation < self.activation_threshold()` are
+    /// ignored. Default: 0.1. Critical processors may lower this to 0.05;
+    /// opportunistic processors may raise it to 0.2.
+    fn activation_threshold(&self) -> f32 {
+        0.1
     }
 
     /// The signal types this processor wants to receive.

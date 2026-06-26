@@ -7,11 +7,15 @@ pub async fn get_stats(
 ) -> Json<serde_json::Value> {
     let kernel = state.kernel.lock().await;
 
+    // Use field_cache for live field count (kernel.fields may be empty if fields
+    // were registered directly through field_runtime rather than kernel.registry)
+    let field_names: Vec<String> = state.field_cache.iter().map(|e| e.key().clone()).collect();
+
     Json(serde_json::json!({
-        "fields": kernel.fields.len(),
+        "fields": field_names.len(),
         "processors": kernel.processors.len(),
         "signal_types": kernel.signal_types.len(),
-        "field_names": kernel.fields,
+        "field_names": field_names,
         "processor_names": kernel.processors,
         "signal_names": kernel.signal_types.iter().map(|(t, d)| {
             serde_json::json!({"type": t.0, "description": d})

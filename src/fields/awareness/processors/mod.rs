@@ -1,0 +1,9 @@
+pub mod attention_processor;
+pub mod curiosity_processor;
+pub mod narrative_processor;
+pub mod reflection_processor;
+pub mod observer_processor;
+pub mod mood_processor;
+pub mod health_processor;
+pub mod pattern_processor;
+pub mod open_loops_processor;

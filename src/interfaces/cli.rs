@@ -23,6 +23,26 @@ pub enum Commands {
         /// REST API port
         #[arg(long, default_value_t = 8647)]
         port: u16,
+
+        /// Enable MCP protocol server (for AI agent tool calling)
+        #[arg(long, default_value_t = false)]
+        mcp: bool,
+
+        /// MCP server port
+        #[arg(long, default_value_t = 8645)]
+        mcp_port: u16,
+
+        /// Storage backend: memory or postgres
+        #[arg(long, default_value = "memory")]
+        storage: String,
+
+        /// Postgres connection URL (overrides auto-detection)
+        #[arg(long)]
+        database_url: Option<String>,
+
+        /// Redis connection URL (overrides auto-detection)
+        #[arg(long)]
+        redis_url: Option<String>,
     },
 
     /// Inject a raw experience into the system

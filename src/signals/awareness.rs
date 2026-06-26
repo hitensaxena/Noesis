@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::eventbus::signal::SignalMeta;
+use crate::kernel::signal::SignalMeta;
 use crate::signals::types;
 use crate::signals::signal_impl;
 
@@ -87,3 +87,57 @@ impl IngestRequest {
 }
 
 signal_impl!(IngestRequest, INGEST_REQUEST, "noesis::signals");
+
+/// A state transition was observed by the observer processor.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ObserverTransitionDetected {
+    pub meta: SignalMeta,
+    pub transition_id: Uuid,
+    pub signal_type: String,
+    pub source: String,
+    pub depth: u32,
+    pub activation: f32,
+    pub salience: f32,
+}
+
+impl ObserverTransitionDetected {
+    pub fn new(signal_type: &str, source: &str, depth: u32, activation: f32, salience: f32) -> Self {
+        Self {
+            meta: SignalMeta::new(types::OBSERVER_TRANSITION_DETECTED, "noesis::signals"),
+            transition_id: Uuid::new_v4(),
+            signal_type: signal_type.to_string(),
+            source: source.to_string(),
+            depth,
+            activation,
+            salience,
+        }
+    }
+}
+
+signal_impl!(ObserverTransitionDetected, OBSERVER_TRANSITION_DETECTED, "noesis::signals");
+
+/// A mood estimate derived from recent signal patterns.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MoodEstimated {
+    pub meta: SignalMeta,
+    pub mood_id: Uuid,
+    pub mood: String,           // "focused", "curious", "uncertain", "engaged", "reflective"
+    pub intensity: f32,         // 0.0–1.0
+    pub signal_volume: usize,   // signals in the observation window
+    pub confidence: f32,
+}
+
+impl MoodEstimated {
+    pub fn new(mood: &str, intensity: f32, signal_volume: usize, confidence: f32) -> Self {
+        Self {
+            meta: SignalMeta::new(types::MOOD_ESTIMATED, "noesis::signals"),
+            mood_id: Uuid::new_v4(),
+            mood: mood.to_string(),
+            intensity,
+            signal_volume,
+            confidence,
+        }
+    }
+}
+
+signal_impl!(MoodEstimated, MOOD_ESTIMATED, "noesis::signals");

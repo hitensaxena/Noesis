@@ -1,0 +1,65 @@
+# Noesis — Docker Compose
+#
+# Starts Noesis with optional Postgres and Redis.
+# Uses profiles for backend services:
+#   docker compose up            # Noesis only (in-memory)
+#   docker compose --profile with-pg up        # Noesis + Postgres
+#   docker compose --profile with-redis up     # Noesis + Redis
+#   docker compose --profile all up            # Noesis + Postgres + Redis
+
+version: "3.8"
+
+services:
+  noesis:
+    build: .
+    image: noesis:latest
+    container_name: noesis
+    ports:
+      - "8080:8080"   # REST API
+      - "8645:8645"   # MCP server
+    environment:
+      - RUST_LOG=noesis=info
+      - NOESIS_API_KEY=${NOESIS_API_KEY:-}
+      # Set for Postgres persistence:
+      # - DATABASE_URL=postgres://noesis:noesis@postgres:5432/noesis
+      # Set for Redis caching:
+      # - REDIS_URL=redis://redis:6379
+    volumes:
+      - noesis_data:/root/.noesis
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:17-alpine
+    container_name: noesis-postgres
+    environment:
+      - POSTGRES_USER=noesis
+      - POSTGRES_PASSWORD=noesis
+      - POSTGRES_DB=noesis
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U noesis"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    profiles:
+      - with-pg
+      - all
+
+  redis:
+    image: redis:7-alpine
+    container_name: noesis-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    profiles:
+      - with-redis
+      - all
+
+volumes:
+  noesis_data:
+  pg_data:
+  redis_data:

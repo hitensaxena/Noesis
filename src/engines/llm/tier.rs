@@ -33,9 +33,9 @@ impl std::fmt::Display for ModelTier {
 /// These mirror curlyos-core's defaults from `shared/models.py`:
 /// - General chain: opensource models with free tier fallbacks
 mod defaults {
-    pub const FAST_CHAIN: &str = "openrouter/owl-alpha,nvidia/nemotron-3-ultra-550b-a55b:free";
-    pub const AGENTIC_CHAIN: &str = "openrouter/owl-alpha";
-    pub const DEEP_CHAIN: &str = "openrouter/owl-alpha";
+    pub const FAST_CHAIN: &str = "openai/gpt-4o-mini,mistralai/mistral-small-24b-instruct-2501:free";
+    pub const AGENTIC_CHAIN: &str = "openai/gpt-4o-mini";
+    pub const DEEP_CHAIN: &str = "openai/gpt-4o-mini";
 }
 
 /// Environment variable names for configuring tiers.
@@ -154,4 +154,61 @@ fn parse_chain(env_key: &str, default: &str) -> Vec<String> {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_model_tier_display() {
+        assert_eq!(ModelTier::Fast.to_string(), "fast");
+        assert_eq!(ModelTier::Agentic.to_string(), "agentic");
+        assert_eq!(ModelTier::Deep.to_string(), "deep");
+    }
+
+    #[test]
+    fn test_model_tier_equality() {
+        assert_eq!(ModelTier::Fast, ModelTier::Fast);
+        assert_ne!(ModelTier::Fast, ModelTier::Deep);
+    }
+
+    #[test]
+    fn test_parse_chain_single() {
+        let models = parse_chain("NONEXISTENT_VAR_12345", "gpt-4o");
+        assert_eq!(models, vec!["gpt-4o"]);
+    }
+
+    #[test]
+    fn test_parse_chain_multi() {
+        let models = parse_chain("NONEXISTENT_VAR_12346", "gpt-4o,claude-3,gemini-pro");
+        assert_eq!(models, vec!["gpt-4o", "claude-3", "gemini-pro"]);
+    }
+
+    #[test]
+    fn test_parse_chain_trims_whitespace() {
+        let models = parse_chain("NONEXISTENT_VAR_12347", " model-a , model-b ");
+        assert_eq!(models, vec!["model-a", "model-b"]);
+    }
+
+    #[test]
+    fn test_has_api_key_default_false() {
+        // Without the api key set, has_api_key should return false
+        // in a clean test environment
+        assert!(!TieredRouter::has_api_key());
+    }
+
+    #[test]
+    fn test_defaults_exist() {
+        assert!(!defaults::FAST_CHAIN.is_empty());
+        assert!(!defaults::AGENTIC_CHAIN.is_empty());
+        assert!(!defaults::DEEP_CHAIN.is_empty());
+    }
+
+    #[test]
+    fn test_env_key_constants() {
+        assert_eq!(env_keys::FAST_CHAIN, "NOESIS_FAST_CHAIN");
+        assert_eq!(env_keys::AGENTIC_CHAIN, "NOESIS_AGENTIC_CHAIN");
+        assert_eq!(env_keys::DEEP_CHAIN, "NOESIS_DEEP_CHAIN");
+    }
 }

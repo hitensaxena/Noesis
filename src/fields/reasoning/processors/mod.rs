@@ -1,0 +1,10 @@
+pub mod metacognition_processor;
+pub mod epistemic_processor;
+pub mod confidence_processor;
+pub mod reasoning_processor;
+pub mod mental_model_processor;
+pub mod decision_processor;
+pub mod hypothesis_processor;
+pub mod analogy_processor;
+pub mod synthesis_processor;
+pub mod concept_processor;

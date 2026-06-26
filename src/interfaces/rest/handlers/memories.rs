@@ -1,10 +1,16 @@
-use axum::{Json, extract::State};
+use axum::{Json, extract::{Query, State}};
 use serde::Deserialize;
 use tracing;
 
 use crate::interfaces::rest::ApiState;
 use crate::signals::EpisodeRecorded;
 use std::sync::Arc;
+
+#[derive(Deserialize)]
+pub struct RecallQuery {
+    pub q: String,
+    pub k: Option<usize>,
+}
 
 #[derive(Deserialize)]
 pub struct CreateMemoryBody {
@@ -48,6 +54,40 @@ pub async fn create_memory(
         "status": "created",
         "source": source,
     }))
+}
+
+/// GET /api/memory/recall?q=query&k=5 — search episodes by content.
+pub async fn recall_memories(
+    State(state): State<ApiState>,
+    Query(params): Query<RecallQuery>,
+) -> Json<serde_json::Value> {
+    let k = params.k.unwrap_or(10).min(100);
+    let memory_state = state.field_cache.get("memory");
+    if let Some(state_val) = memory_state {
+        let episodes = state_val.value().get("episodes").and_then(|e| e.as_array()).cloned().unwrap_or_default();
+        let q = params.q.to_lowercase();
+        let matches: Vec<_> = episodes.iter()
+            .filter(|ep| {
+                ep.get("content").and_then(|c| c.as_str()).unwrap_or("").to_lowercase().contains(&q)
+                    || ep.get("source").and_then(|s| s.as_str()).unwrap_or("").to_lowercase().contains(&q)
+            })
+            .take(k)
+            .cloned()
+            .collect();
+
+        Json(serde_json::json!({
+            "query": params.q,
+            "matches": matches.len(),
+            "results": matches,
+        }))
+    } else {
+        Json(serde_json::json!({
+            "query": params.q,
+            "matches": 0,
+            "results": [],
+            "note": "No memory state cached",
+        }))
+    }
 }
 
 /// GET /api/episodes — list recorded episodes (from field state cache).

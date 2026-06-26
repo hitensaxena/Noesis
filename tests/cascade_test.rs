@@ -9,17 +9,18 @@
 use std::sync::Arc;
 use std::collections::VecDeque;
 
-use noesis::core::kernel::Kernel;
-use noesis::eventbus::bus::EventBus;
-use noesis::eventbus::signal::{SignalArc, SignalType};
-use noesis::field::context::FieldContext;
-use noesis::processor::lifecycle::ProcessorRegistry;
-use noesis::processor::processor::Processor;
+use noesis::kernel::beat_coordinator::BeatPulse;
+use noesis::kernel::kernel::Kernel;
+use noesis::kernel::bus::EventBus;
+use noesis::kernel::signal::{SignalArc, SignalType};
+use noesis::field_runtime::context::FieldContext;
+use noesis::field_runtime::processor_registry::ProcessorRegistry;
 use noesis::signals::types;
 use noesis::signals::IngestRequest;
 use noesis::storage::memory_store::MemoryStore;
 
 /// All known signal types in the system.
+#[allow(dead_code)]
 const ALL_SIGNALS: &[SignalType] = &[
     types::INGEST_REQUEST,
     types::EPISODE_RECORDED,
@@ -36,11 +37,15 @@ const ALL_SIGNALS: &[SignalType] = &[
     types::ENTITY_CREATED,
     types::EDGE_CREATED,
     types::TRIPLES_EXTRACTED,
+    types::BEAT_FAST,
+    types::BEAT_MEDIUM,
+    types::BEAT_SLOW,
+    types::BEAT_IMMEDIATE,
 ];
 
 /// Helper: set up a full kernel with all fields and processors registered.
 async fn setup_full_kernel() -> (Kernel, ProcessorRegistry, FieldContext) {
-    let mut kernel = Kernel::new();
+    let kernel = Kernel::new();
     let storage = Arc::new(MemoryStore::new());
     let field_ctx = FieldContext::new(kernel.event_bus.clone(), storage);
 
@@ -64,8 +69,10 @@ async fn setup_full_kernel() -> (Kernel, ProcessorRegistry, FieldContext) {
     // Register fields
     kernel.registry.register_field("memory", Box::new(|| Box::new(noesis::fields::memory::MemoryField::new())));
     kernel.registry.register_field("identity", Box::new(|| Box::new(noesis::fields::identity::IdentityField::new())));
-    kernel.registry.register_field("executive", Box::new(|| Box::new(noesis::fields::executive::ExecutiveField::new())));
+    kernel.registry.register_field("agency", Box::new(|| Box::new(noesis::fields::agency::AgencyField::new())));
+    kernel.registry.register_field("action", Box::new(|| Box::new(noesis::fields::action::ActionField::new())));
     kernel.registry.register_field("awareness", Box::new(|| Box::new(noesis::fields::awareness::AwarenessField::new())));
+    kernel.registry.register_field("reasoning", Box::new(|| Box::new(noesis::fields::reasoning::ReasoningField::new())));
     kernel.registry.register_field("simulation", Box::new(|| Box::new(noesis::fields::simulation::SimulationField::new())));
     kernel.registry.register_field("knowledge_graph", Box::new(|| Box::new(noesis::fields::graph::GraphField::new())));
 
@@ -142,7 +149,7 @@ async fn test_basic_cascade() {
 
     assert!(results.len() >= 1, "should produce at least 1 signal");
     assert!(
-        results.iter().any(|r| r.contains("ingest.request")),
+        results.iter().any(|r| r.contains("memory.capture.ingested")),
         "should process ingest.request"
     );
 }
@@ -162,7 +169,7 @@ async fn test_multi_episode_cascade_triggers() {
 
     let mut all_signals: Vec<String> = Vec::new();
 
-    for (i, text) in texts.iter().enumerate() {
+    for (_i, text) in texts.iter().enumerate() {
         let signal = IngestRequest::new(text, "test");
         let results = run_single_cascade(
             &mut processor_registry,
@@ -175,6 +182,25 @@ async fn test_multi_episode_cascade_triggers() {
         // Brief pause for processor state to settle
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }
+
+    // Inject cognitive beats to trigger beat-dependent processors
+    // BEAT_SLOW triggers NarrativeProcessor + ConsolidationProcessor
+    let beat_slow = BeatPulse::new(types::BEAT_SLOW);
+    let results = run_single_cascade(
+        &mut processor_registry,
+        &field_ctx,
+        Arc::new(beat_slow),
+    ).await;
+    all_signals.extend(results);
+
+    // BEAT_MEDIUM triggers CuriosityProcessor
+    let beat_med = BeatPulse::new(types::BEAT_MEDIUM);
+    let results = run_single_cascade(
+        &mut processor_registry,
+        &field_ctx,
+        Arc::new(beat_med),
+    ).await;
+    all_signals.extend(results);
 
     // Count signal types
     let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
@@ -193,31 +219,31 @@ async fn test_multi_episode_cascade_triggers() {
 
     // Verify key signals
     assert!(
-        *counts.get("ingest.request").unwrap_or(&0) >= 5,
+        *counts.get("memory.capture.ingested").unwrap_or(&0) >= 5,
         "should have 5+ ingest requests"
     );
     assert!(
-        *counts.get("episode.recorded").unwrap_or(&0) >= 1,
+        *counts.get("memory.capture.recorded").unwrap_or(&0) >= 1,
         "should have episode.recorded"
     );
     assert!(
-        *counts.get("narrative.generated").unwrap_or(&0) >= 1,
+        *counts.get("awareness.reflection.narrative").unwrap_or(&0) >= 1,
         "narrative should fire every 3 episodes"
     );
     assert!(
-        *counts.get("curiosity.detected").unwrap_or(&0) >= 1,
+        *counts.get("awareness.curiosity.detected").unwrap_or(&0) >= 1,
         "curiosity should fire every 5 episodes"
     );
     assert!(
-        *counts.get("memory.consolidated").unwrap_or(&0) >= 1,
+        *counts.get("memory.consolidation.consolidated").unwrap_or(&0) >= 1,
         "consolidation should fire every 3 episodes"
     );
     assert!(
-        *counts.get("triples.extracted").unwrap_or(&0) >= 1,
+        *counts.get("memory.knowledge.triples_extracted").unwrap_or(&0) >= 1,
         "extraction should fire on each episode"
     );
     assert!(
-        *counts.get("attention.shifted").unwrap_or(&0) >= 1,
+        *counts.get("awareness.attention.shifted").unwrap_or(&0) >= 1,
         "attention should shift on each relevant signal"
     );
 }
@@ -249,10 +275,10 @@ async fn test_field_registration() {
     let (kernel, _, _) = setup_full_kernel().await;
 
     let fields = kernel.registry.list_fields();
-    assert_eq!(fields.len(), 6, "should have 6 fields");
+    assert_eq!(fields.len(), 8, "should have 8 fields");
 
     let expected = [
-        "memory", "identity", "executive", "awareness", "simulation", "knowledge_graph",
+        "memory", "identity", "agency", "action", "awareness", "reasoning", "simulation", "knowledge_graph",
     ];
     for name in &expected {
         assert!(
@@ -272,11 +298,11 @@ async fn test_signal_type_registration() {
     assert_eq!(signals.len(), 15, "should have 15 signal types");
 
     let expected = [
-        "ingest.request", "episode.recorded", "memory.consolidated",
-        "pattern.detected", "belief.changed", "identity.updated",
-        "goal.created", "goal.completed", "attention.shifted",
-        "curiosity.detected", "narrative.generated", "decision.evaluated",
-        "entity.created", "edge.created", "triples.extracted",
+        "memory.capture.ingested", "memory.capture.recorded", "memory.consolidation.consolidated",
+        "memory.consolidation.pattern_detected", "identity.beliefs.changed", "identity.self.updated",
+        "agency.goals.created", "agency.goals.completed", "awareness.attention.shifted",
+        "awareness.curiosity.detected", "awareness.reflection.narrative", "agency.decision.evaluated",
+        "memory.knowledge.entity_created", "memory.knowledge.edge_created", "memory.knowledge.triples_extracted",
     ];
     for name in &expected {
         assert!(
@@ -340,23 +366,25 @@ async fn test_processor_independence() {
     assert!(!emitted.is_empty(), "ExtractionProcessor should emit triples");
     assert_eq!(emitted[0].signal_type(), types::TRIPLES_EXTRACTED);
 
-    // Test NarrativeProcessor (3 episodes trigger)
+    // Test NarrativeProcessor (buffers episodes, emits on BEAT_SLOW)
     let mut na = noesis::processors::narrative::NarrativeProcessor::new();
     for i in 0..3 {
         let eps = noesis::signals::EpisodeRecorded::new(
             &format!("Narrative test episode {}", i), "test", vec![],
         );
         let result = na.process(&ctx, Arc::new(eps)).await.unwrap();
-        if i == 2 {
-            assert!(!result.is_empty(), "3rd episode triggers narrative");
-            assert_eq!(result[0].signal_type(), types::NARRATIVE_GENERATED);
-        }
+        assert!(result.is_empty(), "episode should buffer, not emit yet");
     }
+    // Trigger narrative with slow beat
+    let beat = BeatPulse::new(types::BEAT_SLOW);
+    let result = na.process(&ctx, Arc::new(beat)).await.unwrap();
+    assert!(!result.is_empty(), "BEAT_SLOW should trigger narrative after 3 episodes");
+    assert_eq!(result[0].signal_type(), types::NARRATIVE_GENERATED);
 
     // Test BeliefProcessor
     let mut bp = noesis::processors::belief::BeliefProcessor::new();
     let mc = noesis::signals::MemoryConsolidated {
-        meta: noesis::eventbus::signal::SignalMeta::new(types::MEMORY_CONSOLIDATED, "test"),
+        meta: noesis::kernel::signal::SignalMeta::new(types::MEMORY_CONSOLIDATED, "test"),
         episode_ids: vec![],
         summary: "test".to_string(),
         memory_count: 3,
@@ -377,7 +405,7 @@ async fn test_processor_independence() {
     // Test GoalProcessor
     let mut gp = noesis::processors::goal::GoalProcessor::new();
     let iu = noesis::signals::IdentityUpdated {
-        meta: noesis::eventbus::signal::SignalMeta::new(types::IDENTITY_UPDATED, "test"),
+        meta: noesis::kernel::signal::SignalMeta::new(types::IDENTITY_UPDATED, "test"),
         identity_version: 1,
         beliefs_count: 1,
         traits_count: 0,
@@ -394,28 +422,32 @@ async fn test_processor_independence() {
     assert!(result.is_ok(), "AttentionProcessor should process");
     assert!(!result.unwrap().is_empty(), "should emit AttentionShifted");
 
-    // Test ConsolidationProcessor
+    // Test ConsolidationProcessor (buffers episodes, emits on BEAT_SLOW)
     let mut cp = noesis::processors::consolidation::ConsolidationProcessor::new();
     for i in 0..3 {
         let eps = noesis::signals::EpisodeRecorded::new(
             &format!("Consolidation test {}", i), "test", vec![],
         );
         let result = cp.process(&ctx, Arc::new(eps)).await.unwrap();
-        if i == 2 {
-            assert!(!result.is_empty(), "3rd episode triggers consolidation");
-        }
+        assert!(result.is_empty(), "episode should buffer, not emit yet");
     }
+    // Trigger consolidation with slow beat
+    let beat = BeatPulse::new(types::BEAT_SLOW);
+    let result = cp.process(&ctx, Arc::new(beat)).await.unwrap();
+    assert!(!result.is_empty(), "BEAT_SLOW should trigger consolidation after 3 episodes");
 
-    // Test CuriosityProcessor (5 episodes trigger)
+    // Test CuriosityProcessor (buffers episodes, emits on BEAT_MEDIUM)
     let mut cr = noesis::processors::curiosity::CuriosityProcessor::new();
     for i in 0..5 {
         let eps = noesis::signals::EpisodeRecorded::new(
             &format!("Curiosity test {}", i), "test", vec![],
         );
         let result = cr.process(&ctx, Arc::new(eps)).await.unwrap();
-        if i == 4 {
-            assert!(!result.is_empty(), "5th episode triggers curiosity");
-            assert_eq!(result[0].signal_type(), types::CURIOSITY_DETECTED);
-        }
+        assert!(result.is_empty(), "episode should buffer, not emit yet");
     }
+    // Trigger curiosity with medium beat
+    let beat = BeatPulse::new(types::BEAT_MEDIUM);
+    let result = cr.process(&ctx, Arc::new(beat)).await.unwrap();
+    assert!(!result.is_empty(), "BEAT_MEDIUM should trigger curiosity after 5 episodes");
+    assert_eq!(result[0].signal_type(), types::CURIOSITY_DETECTED);
 }

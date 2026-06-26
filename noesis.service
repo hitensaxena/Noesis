@@ -1,0 +1,28 @@
+[Unit]
+Description=Noesis — Decentralized Cognitive Architecture
+Documentation=https://github.com/user/noesis
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/noesis start --rest --port 8080 --mcp --mcp-port 8645
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+Environment=RUST_LOG=noesis=info
+Environment=NOESIS_API_KEY=
+# Uncomment to enable Postgres persistence:
+# Environment=DATABASE_URL=postgres://noesis:noesis@localhost:5432/noesis
+# Uncomment to enable Redis caching:
+# Environment=REDIS_URL=redis://localhost:6379
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/noesis
+
+[Install]
+WantedBy=multi-user.target

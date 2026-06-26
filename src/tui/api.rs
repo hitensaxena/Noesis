@@ -74,4 +74,50 @@ impl NoesisClient {
         let obs = self.observability().await?;
         Ok((stats, signals, obs))
     }
+
+    // ---------------------------------------------------------------------------
+    // Deep observability detail endpoints
+    // ---------------------------------------------------------------------------
+
+    pub async fn identity_detail(&self) -> Result<Value> {
+        Ok(self.client.get(format!("{}/api/identity/detail", self.base_url))
+            .send().await?.json().await?)
+    }
+
+    pub async fn memory_detail(&self) -> Result<Value> {
+        Ok(self.client.get(format!("{}/api/memory/detail", self.base_url))
+            .send().await?.json().await?)
+    }
+
+    pub async fn agency_detail(&self) -> Result<Value> {
+        Ok(self.client.get(format!("{}/api/agency/detail", self.base_url))
+            .send().await?.json().await?)
+    }
+
+    pub async fn awareness_detail(&self) -> Result<Value> {
+        Ok(self.client.get(format!("{}/api/awareness/detail", self.base_url))
+            .send().await?.json().await?)
+    }
+
+    pub async fn simulation_detail(&self) -> Result<Value> {
+        Ok(self.client.get(format!("{}/api/simulation/detail", self.base_url))
+            .send().await?.json().await?)
+    }
+
+    pub async fn core_detail(&self) -> Result<Value> {
+        Ok(self.client.get(format!("{}/api/core/detail", self.base_url))
+            .send().await?.json().await?)
+    }
+
+    pub async fn detail_for(&self, name: &str) -> Result<Value> {
+        match name {
+            "identity" => self.identity_detail().await,
+            "memory" => self.memory_detail().await,
+            "agency" => self.agency_detail().await,
+            "awareness" => self.awareness_detail().await,
+            "simulation" => self.simulation_detail().await,
+            "core" => self.core_detail().await,
+            _ => Ok(serde_json::json!({"error": format!("unknown detail: {}", name)})),
+        }
+    }
 }

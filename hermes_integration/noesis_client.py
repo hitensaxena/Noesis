@@ -166,3 +166,38 @@ def noesis_available() -> bool:
         return h.get("status") == "ok"
     except Exception:
         return False
+
+
+# ---------------------------------------------------------------------------
+# Deep Observability Detail Endpoints
+# ---------------------------------------------------------------------------
+
+
+def identity_detail() -> dict:
+    """GET /api/identity/detail — deep identity observability (beliefs, values, traits, roles, etc.)."""
+    return _api("GET", "/api/identity/detail")
+
+
+def memory_detail() -> dict:
+    """GET /api/memory/detail — deep memory observability (working, episodic, semantic, procedural, etc.)."""
+    return _api("GET", "/api/memory/detail")
+
+
+def executive_detail() -> dict:
+    """GET /api/executive/detail — deep executive observability (goals, projects, tasks, plans, etc.)."""
+    return _api("GET", "/api/executive/detail")
+
+
+def awareness_detail() -> dict:
+    """GET /api/awareness/detail — deep awareness observability (observer, attention, health, curiosity, etc.)."""
+    return _api("GET", "/api/awareness/detail")
+
+
+def simulation_detail() -> dict:
+    """GET /api/simulation/detail — deep simulation observability (scenarios, assumptions, forecasts, risks, etc.)."""
+    return _api("GET", "/api/simulation/detail")
+
+
+def core_detail() -> dict:
+    """GET /api/core/detail — deep core system observability (event_bus, scheduler, registry, metrics, etc.)."""
+    return _api("GET", "/api/core/detail")
