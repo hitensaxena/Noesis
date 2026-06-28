@@ -57,9 +57,7 @@ impl Client {
 
     pub fn signal_history(&self, limit: usize, field: Option<&str>) -> Result<Vec<SignalHistoryEntry>> {
         let mut path = format!("/api/signals/history?limit={limit}");
-        if let Some(f) = field {
-            path.push_str(&format!("&field={f}"));
-        }
+        if let Some(f) = field { path.push_str(&format!("&field={f}")); }
         self.get(&path)
     }
 
@@ -140,21 +138,30 @@ pub struct Health {
 #[derive(Deserialize, Default, Clone)]
 pub struct Stats {
     #[serde(default)]
-    pub fields: Vec<String>,
+    pub field_names: Vec<String>,
     #[serde(default)]
-    pub processors: Vec<String>,
+    pub fields: usize,
     #[serde(default)]
-    pub signal_types: Vec<(String, SignalTypeItem)>,
+    pub processor_names: Vec<String>,
     #[serde(default)]
-    pub field_count: usize,
+    pub processors: usize,
     #[serde(default)]
-    pub processor_count: usize,
+    pub signal_names: Vec<NamedSignalType>,
     #[serde(default)]
-    pub signal_type_count: usize,
-    #[serde(default)]
+    pub signal_types: usize,
+    #[serde(skip)]
     pub signals_total: usize,
-    #[serde(default)]
+    #[serde(skip)]
     pub cascade_cycles: usize,
+}
+
+#[derive(Deserialize, Clone)]
+pub struct NamedSignalType {
+    #[serde(default)]
+    #[serde(rename = "type")]
+    pub signal_type: String,
+    #[serde(default)]
+    pub description: String,
 }
 
 #[derive(Deserialize, Clone)]
@@ -179,7 +186,7 @@ pub struct SignalHistoryEntry {
     pub data: serde_json::Value,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub struct Observability {
     #[serde(default)]
     pub signal_types: Vec<(String, String)>,
@@ -271,5 +278,5 @@ pub struct DashboardData {
 }
 
 fn truncate(s: &str, n: usize) -> String {
-    if s.len() <= n { s.to_string() } else { format!("{}…", &s[..n]) }
+    if s.len() <= n { s.to_string() } else { format!("{}...", &s[..n]) }
 }

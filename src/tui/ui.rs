@@ -271,9 +271,9 @@ fn draw_dash_kpis(f: &mut Frame, app: &App, area: Rect) {
     let stats = &app.stats;
     let uptime = app.health.as_ref().map(|h| h.uptime_seconds).unwrap_or(0.0);
     let cards: [(&str, String, ratatui::style::Color); 6] = [
-        ("FIELDS", fmt_int(stats.field_count as i64), GREEN),
-        ("PROCESSORS", fmt_int(stats.processor_count as i64), CYAN),
-        ("SIGNAL TYPES", fmt_int(stats.signal_type_count as i64), PERI),
+        ("FIELDS", fmt_int(stats.fields as i64), GREEN),
+        ("PROCESSORS", fmt_int(stats.processors as i64), CYAN),
+        ("SIGNAL TYPES", fmt_int(stats.signal_types as i64), PERI),
         ("SIGNALS", fmt_int(stats.signals_total as i64), LIME),
         ("CASCADES", fmt_int(stats.cascade_cycles as i64), PURPLE),
         ("UPTIME", format!("{:.0}s", uptime), AMBER),

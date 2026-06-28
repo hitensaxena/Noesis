@@ -250,7 +250,12 @@ impl App {
                 self.history_sel.set_len(v.len());
                 self.signal_history = v;
             }
-            Resp::ObservabilityOverview(o) => self.observability = Some(*o),
+            Resp::ObservabilityOverview(o) => {
+                let o = *o;
+                self.observability = Some(o.clone());
+                self.stats.signals_total = o.signals_total.unwrap_or(0);
+                self.stats.cascade_cycles = o.cascade_cycles.unwrap_or(0);
+            }
             Resp::ProcessorMetrics(v) => self.processor_metrics = v,
             Resp::SignalMetrics(m) => self.signal_metrics = Some(*m),
             Resp::CascadeTrace(t) => self.cascade_trace = Some(*t),
