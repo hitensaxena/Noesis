@@ -9,35 +9,35 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::widgets::ListState;
 use std::sync::mpsc::Sender;
 
-pub const TABS: [&str; 5] = ["Dashboard", "Fields", "Signals", "Observability", "System"];
+pub const TABS: [&str; 5] = ["Dashboard", "Memory", "Fields", "Signals", "System"];
 pub const FIELD_SUBS: [&str; 9] = [
     "Overview", "Identity", "Memory", "Agency", "Awareness",
     "Reasoning", "Simulation", "Graph", "Core",
 ];
-pub const SIGNAL_SUBS: [&str; 3] = ["Types", "History", "Inject"];
-pub const OBSERV_SUBS: [&str; 4] = ["Overview", "Processors", "Metrics", "Cascade"];
-pub const SYSTEM_SUBS: [&str; 3] = ["Config", "Plugins", "Log"];
+pub const MEMORY_SUBS: [&str; 3] = ["Browse", "Episodes", "History"];
+pub const SIGNAL_SUBS: [&str; 3] = ["Types", "Distribution", "Processors"];
+pub const SYSTEM_SUBS: [&str; 5] = ["Config", "Plugins", "Observability", "Cascade", "Log"];
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Tab {
     Dashboard,
+    Memory,
     Fields,
     Signals,
-    Observability,
     System,
 }
 
-const TAB_ORDER: [Tab; 5] = [Tab::Dashboard, Tab::Fields, Tab::Signals, Tab::Observability, Tab::System];
+const TAB_ORDER: [Tab; 5] = [Tab::Dashboard, Tab::Memory, Tab::Fields, Tab::Signals, Tab::System];
 
 impl Tab {
     pub fn index(self) -> usize { TAB_ORDER.iter().position(|&t| t == self).unwrap_or(0) }
     fn from_index(i: usize) -> Tab { TAB_ORDER[i.min(TAB_ORDER.len() - 1)] }
-    fn is_live(self) -> bool { matches!(self, Tab::Dashboard | Tab::Observability) }
+    fn is_live(self) -> bool { matches!(self, Tab::Dashboard | Tab::System) }
     pub fn sub_labels(self) -> &'static [&'static str] {
         match self {
+            Tab::Memory => &MEMORY_SUBS,
             Tab::Fields => &FIELD_SUBS,
             Tab::Signals => &SIGNAL_SUBS,
-            Tab::Observability => &OBSERV_SUBS,
             Tab::System => &SYSTEM_SUBS,
             _ => &[],
         }
@@ -188,7 +188,7 @@ impl App {
         }
         match self.tab {
             Tab::Dashboard => self.refresh(),
-            Tab::Observability => self.refresh(),
+            Tab::System => self.refresh(),
             _ => {}
         }
     }
@@ -201,10 +201,15 @@ impl App {
                 self.send(Req::Dashboard);
                 self.send(Req::Stats);
             }
+            Tab::Memory => match self.sub_idx {
+                0 => self.send(Req::FieldDetail("memory".to_string())),
+                1 => self.send(Req::Episodes),
+                2 => self.send(Req::SignalHistory { limit: 100, field: None }),
+                _ => {}
+            },
             Tab::Fields => {
                 let name = FIELD_SUBS[self.sub_idx].to_lowercase();
                 if self.sub_idx == 0 {
-                    // Overview — fetch all fields
                     for f in ["identity", "memory", "agency", "awareness", "reasoning", "simulation", "graph", "core"] {
                         self.send(Req::FieldDetail(f.to_string()));
                     }
@@ -214,24 +219,16 @@ impl App {
             }
             Tab::Signals => match self.sub_idx {
                 0 => self.send(Req::SignalTypes),
-                1 => self.send(Req::SignalHistory { limit: 100, field: None }),
-                2 => {} // Inject is form-based
-                _ => {}
-            },
-            Tab::Observability => match self.sub_idx {
-                0 => {
-                    self.send(Req::ObservabilityOverview);
-                    self.send(Req::Stats);
-                }
-                1 => self.send(Req::ProcessorMetrics),
-                2 => self.send(Req::SignalMetrics),
-                3 => self.send(Req::CascadeTrace),
+                1 => self.send(Req::SignalMetrics),
+                2 => self.send(Req::ProcessorMetrics),
                 _ => {}
             },
             Tab::System => match self.sub_idx {
                 0 => self.send(Req::Config),
                 1 => self.send(Req::Plugins),
-                _ => {} // Log is local
+                2 => { self.send(Req::ObservabilityOverview); self.send(Req::Stats); }
+                3 => self.send(Req::CascadeTrace),
+                _ => {}
             },
         }
     }
