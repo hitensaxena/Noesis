@@ -547,7 +547,7 @@ fn draw_obs_overview(f: &mut Frame, app: &App, area: Rect) {
         lines.push(kv("fields", &format!("{}", o.fields.unwrap_or(0))));
         lines.push(kv("processors", &format!("{}", o.processors.unwrap_or(0))));
         lines.push(kv("signals total", &format!("{}", o.signals_total.unwrap_or(0))));
-        lines.push(kv("cascade cycles", &format!("{}", o.cascade_cycles.unwrap_or(0))));
+        lines.push(kv("cascade cycles", &format!("{}", o.cascade_cycles)));
         lines.push(kv("uptime", &format!("{:.0}s", o.uptime_seconds)));
     }
     if let Some(sm) = &app.signal_metrics {

@@ -254,7 +254,7 @@ impl App {
                 let o = *o;
                 self.observability = Some(o.clone());
                 self.stats.signals_total = o.signals_total.unwrap_or(0);
-                self.stats.cascade_cycles = o.cascade_cycles.unwrap_or(0);
+                self.stats.cascade_cycles = o.cascade_cycles;
             }
             Resp::ProcessorMetrics(v) => self.processor_metrics = v,
             Resp::SignalMetrics(m) => self.signal_metrics = Some(*m),

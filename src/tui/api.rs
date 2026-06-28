@@ -52,7 +52,8 @@ impl Client {
     }
 
     pub fn signal_types(&self) -> Result<Vec<SignalTypeItem>> {
-        self.get("/api/signals")
+        let v: serde_json::Value = self.get("/api/signals")?;
+        Ok(v.get("signal_types").and_then(|a| serde_json::from_value(a.clone()).ok()).unwrap_or_default())
     }
 
     pub fn signal_history(&self, limit: usize, field: Option<&str>) -> Result<Vec<SignalHistoryEntry>> {
@@ -66,27 +67,59 @@ impl Client {
     }
 
     pub fn processor_metrics(&self) -> Result<Vec<ProcessorMetric>> {
-        self.get("/api/observability/processors")
+        let v: serde_json::Value = self.get("/api/observability/processors")?;
+        let map = match &v {
+            serde_json::Value::Object(m) => m,
+            _ => return Ok(vec![]),
+        };
+        Ok(map.iter().map(|(name, stats)| ProcessorMetric {
+            name: name.clone(),
+            count: stats.get("count").and_then(|c| c.as_u64()).unwrap_or(0),
+            avg_latency_ms: stats.get("avg_latency_ms").and_then(|c| c.as_u64()).unwrap_or(0),
+        }).collect())
     }
 
     pub fn signal_metrics(&self) -> Result<SignalMetricsData> {
-        self.get("/api/observability/signals")
+        let v: serde_json::Value = self.get("/api/observability/signals")?;
+        let signals = match &v {
+            serde_json::Value::Object(m) => m.iter().map(|(k, v)| (k.clone(), v.as_u64().unwrap_or(0))).collect(),
+            _ => std::collections::BTreeMap::new(),
+        };
+        let total: u64 = signals.values().sum();
+        Ok(SignalMetricsData { signals, total })
     }
 
     pub fn cascade_trace(&self) -> Result<CascadeTraceData> {
-        self.get("/api/observability/cascade")
+        let v: serde_json::Value = self.get("/api/observability/cascade")?;
+        let recent = v.get("recent_cascades").and_then(|a| a.as_array()).cloned().unwrap_or_default();
+        Ok(CascadeTraceData {
+            depth: 0,
+            signals: recent.iter().filter_map(|c| c.as_str().map(|s| s.to_string())).collect(),
+            duration_ms: 0.0,
+        })
     }
 
     pub fn capabilities(&self) -> Result<Vec<Capability>> {
-        self.get("/api/capabilities")
+        let v: serde_json::Value = self.get("/api/capabilities")?;
+        Ok(v.get("capabilities").and_then(|a| serde_json::from_value(a.clone()).ok()).unwrap_or_default())
     }
 
     pub fn plugins(&self) -> Result<Vec<PluginSummary>> {
-        self.get("/api/plugins")
+        let v: serde_json::Value = self.get("/api/plugins")?;
+        Ok(v.get("plugins").and_then(|a| serde_json::from_value(a.clone()).ok()).unwrap_or_default())
     }
 
     pub fn config(&self) -> Result<SystemConfig> {
-        self.get("/api/config")
+        let v: serde_json::Value = self.get("/api/config")?;
+        Ok(SystemConfig {
+            rest_api_enabled: v.get("auth_enabled").and_then(|b| b.as_bool()).unwrap_or(false),
+            port: 8647,
+            storage_backend: v.get("service").and_then(|s| s.as_str()).unwrap_or("memory").to_string(),
+            settings: match &v {
+                serde_json::Value::Object(m) => m.iter().map(|(k, val)| (k.clone(), val.clone())).collect(),
+                _ => std::collections::BTreeMap::new(),
+            }.into_iter().filter(|(k, _)| !["service", "version"].contains(&k.as_str())).collect(),
+        })
     }
 
     pub fn detail_for(&self, name: &str) -> Result<serde_json::Value> {
@@ -189,7 +222,7 @@ pub struct SignalHistoryEntry {
 #[derive(Deserialize, Clone)]
 pub struct Observability {
     #[serde(default)]
-    pub signal_types: Vec<(String, String)>,
+    pub signal_types: usize,
     #[serde(default)]
     pub signals_processed: serde_json::Value,
     #[serde(default)]
@@ -200,9 +233,10 @@ pub struct Observability {
     pub processors: Option<usize>,
     #[serde(default)]
     pub uptime_seconds: f64,
-    #[serde(default)]
-    pub cascade_cycles: Option<usize>,
-    #[serde(default)]
+    // NOTE: cascade_cycles and signal_rates not returned by daemon yet
+    #[serde(skip)]
+    pub cascade_cycles: usize,
+    #[serde(skip)]
     pub signal_rates: std::collections::BTreeMap<String, f64>,
 }
 
