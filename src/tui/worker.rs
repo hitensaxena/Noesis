@@ -23,6 +23,12 @@ pub enum Req {
     Config,
     /// Fetch deep field detail by name
     FieldDetail(String),
+    /// Memories / episodes / identity
+    Memories,
+    Episodes,
+    Identity,
+    /// Signal stats
+    SignalStats,
     /// Ingest text
     Ingest(String),
     /// Inject a signal
@@ -79,6 +85,10 @@ fn handle(c: &Client, req: Req) -> Resp {
             Ok(v) => Resp::FieldDetail(name, v),
             Err(e) => Resp::Error(format!("detail {name}: {e}")),
         },
+        Req::Memories => wrap(c.memory_state(), |v| Resp::FieldDetail("memories".into(), v)),
+        Req::Episodes => wrap(c.episodes(), |v| Resp::FieldDetail("episodes".into(), v)),
+        Req::Identity => wrap(c.identity(), |v| Resp::FieldDetail("identity_facts".into(), v)),
+        Req::SignalStats => wrap(c.signal_stats(), |v| Resp::FieldDetail("signal_stats".into(), v)),
         Req::Ingest(text) => match c.ingest(&text) {
             Ok(_) => Resp::ActionOk { msg: "Ingested".into(), refresh: true },
             Err(e) => Resp::Error(format!("ingest: {e}")),

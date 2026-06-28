@@ -369,14 +369,14 @@ fn draw_fields(f: &mut Frame, app: &mut App, area: Rect) {
     }
 
     match FIELD_SUBS[app.sub_idx] {
-        "Identity" => draw_field_card(f, "Identity", detail, rows[1]),
-        "Memory" => draw_field_card(f, "Memory", detail, rows[1]),
-        "Agency" => draw_field_card(f, "Agency", detail, rows[1]),
-        "Awareness" => draw_field_card(f, "Awareness", detail, rows[1]),
-        "Reasoning" => draw_field_card(f, "Reasoning", detail, rows[1]),
-        "Simulation" => draw_field_card(f, "Simulation", detail, rows[1]),
-        "Graph" => draw_graph_detail(f, detail, rows[1]),
-        "Core" => draw_core_detail(f, detail, rows[1]),
+        "Identity" => render_identity_field(f, detail, rows[1]),
+        "Memory" => render_memory_field(f, detail, rows[1]),
+        "Agency" => render_agency_field(f, detail, rows[1]),
+        "Awareness" => render_awareness_field(f, detail, rows[1]),
+        "Reasoning" => render_reasoning_field(f, detail, rows[1]),
+        "Simulation" => render_simulation_field(f, detail, rows[1]),
+        "Graph" => render_graph_field(f, detail, rows[1]),
+        "Core" => render_core_field(f, detail, rows[1]),
         _ => {
             f.render_widget(Paragraph::new("Select a field sub-view").block(panel("Fields")), rows[1]);
         }
@@ -416,40 +416,204 @@ fn summarize_value(v: &serde_json::Value) -> String {
     }
 }
 
-fn draw_field_card(f: &mut Frame, title: &str, detail: Option<&serde_json::Value>, area: Rect) {
-    let mut lines = vec![];
-    match detail {
-        Some(serde_json::Value::Object(map)) => {
-            for (k, v) in map {
-                let val_str = match v {
-                    serde_json::Value::String(s) => truncate(s, 60),
-                    serde_json::Value::Number(n) => n.to_string(),
-                    serde_json::Value::Bool(b) => b.to_string(),
-                    serde_json::Value::Array(a) => format!("[{} items]", a.len()),
-                    serde_json::Value::Object(o) => format!("{{{}}}", o.keys().map(|k| k.as_str()).collect::<Vec<_>>().join(", ")),
-                    serde_json::Value::Null => "null".into(),
-                };
-                lines.push(kv(k, &val_str));
-            }
-        }
-        Some(other) => lines.push(Line::from(Span::styled(format!("{other}"), Style::default().fg(TEXT)))),
-        None => lines.push(Line::from(Span::styled("  Not loaded — press r to refresh", Style::default().fg(DIM)))),
-    }
-    f.render_widget(Paragraph::new(lines).block(panel(title)).wrap(Wrap { trim: true }), area);
+// ── Field-specific structured renderers ─────────────────────────────────
+
+fn count_of(d: &Option<&serde_json::Value>, prefix: &str, counter: &str) -> i64 {
+    d.and_then(|d| d.as_object())
+        .and_then(|m| m.get(prefix))
+        .and_then(|s| s.get(counter))
+        .and_then(|c| c.as_i64())
+        .unwrap_or(0)
 }
 
-fn draw_graph_detail(f: &mut Frame, detail: Option<&serde_json::Value>, area: Rect) {
+fn render_identity_field(f: &mut Frame, detail: Option<&serde_json::Value>, area: Rect) {
     let mut lines = vec![];
     if let Some(d) = detail {
-        lines.extend(json_lines(d, 0));
+        lines.push(kv("version", &format!("v{}", count_of(&detail, "identity", "version"))));
+        lines.push(kv("beliefs", &fmt_int(count_of(&detail, "beliefs", "count"))));
+        lines.push(kv("traits", &fmt_int(count_of(&detail, "traits", "count"))));
+        lines.push(kv("principles", &fmt_int(count_of(&detail, "principles", "count"))));
+        lines.push(kv("preferences", &fmt_int(count_of(&detail, "preferences", "count"))));
+        lines.push(Line::from(Span::raw("")));
+        let note = d.pointer("/beliefs/note").and_then(|n| n.as_str()).unwrap_or("");
+        if !note.is_empty() {
+            lines.push(Line::from(Span::styled(format!(" {}", truncate(note, 120)), Style::default().fg(FAINT))));
+        }
+    } else {
+        lines.push(Line::from(Span::styled("  Not loaded", Style::default().fg(DIM))));
+    }
+    f.render_widget(Paragraph::new(lines).block(panel("Identity")).wrap(Wrap { trim: true }), area);
+}
+
+fn render_memory_field(f: &mut Frame, detail: Option<&serde_json::Value>, area: Rect) {
+    let mut lines = vec![];
+    if let Some(d) = detail {
+        let episodes = count_of(&detail, "episodic", "count");
+        let entities = count_of(&detail, "graph", "entities");
+        let relations = count_of(&detail, "graph", "relations");
+        let consolid = d.pointer("/consolidation/status").and_then(|s| s.as_str()).unwrap_or("—");
+        let mem_count = count_of(&detail, "semantic", "count").max(count_of(&detail, "memories", "count"));
+
+        lines.push(kv("episodes", &fmt_int(episodes)));
+        lines.push(kv("entities", &fmt_int(entities)));
+        lines.push(kv("relations", &fmt_int(relations)));
+        lines.push(kv("memories", &fmt_int(mem_count)));
+        lines.push(kv("consolidation", consolid));
+
+        // Show recent episodes
+        if let Some(items) = d.pointer("/episodic/items").and_then(|a| a.as_array()) {
+            if !items.is_empty() {
+                lines.push(Line::from(Span::raw("")));
+                lines.push(head("Recent episodes"));
+                for ep in items.iter().take(3) {
+                    let content = ep.get("content").and_then(|c| c.as_str()).unwrap_or("");
+                    let ts = ep.get("timestamp").and_then(|t| t.as_str()).unwrap_or("");
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("  {} ", fmt_time(Some(ts))), Style::default().fg(FAINT)),
+                        Span::styled(truncate(content, 80), Style::default().fg(TEXT)),
+                    ]));
+                }
+            }
+        }
+    } else {
+        lines.push(Line::from(Span::styled("  Not loaded", Style::default().fg(DIM))));
+    }
+    f.render_widget(Paragraph::new(lines).block(panel("Memory")).wrap(Wrap { trim: true }), area);
+}
+
+fn render_agency_field(f: &mut Frame, detail: Option<&serde_json::Value>, area: Rect) {
+    let mut lines = vec![];
+    if let Some(_d) = detail {
+        let active = count_of(&detail, "goals", "active");
+        let total = count_of(&detail, "goals", "total").max(active);
+        let abandoned = count_of(&detail, "goals", "abandoned");
+        let pursuits = count_of(&detail, "active_pursuits", "count");
+        let eval_count = count_of(&detail, "evaluation", "count");
+
+        lines.push(kv("goals", &format!("{} active / {} total", active, total.max(active))));
+        if abandoned > 0 { lines.push(kv("abandoned", &fmt_int(abandoned))); }
+        lines.push(kv("pursuits", &fmt_int(pursuits)));
+        lines.push(kv("evaluations", &fmt_int(eval_count)));
+    } else {
+        lines.push(Line::from(Span::styled("  Not loaded", Style::default().fg(DIM))));
+    }
+    f.render_widget(Paragraph::new(lines).block(panel("Agency")).wrap(Wrap { trim: true }), area);
+}
+
+fn render_awareness_field(f: &mut Frame, detail: Option<&serde_json::Value>, area: Rect) {
+    let mut lines = vec![];
+    if let Some(d) = detail {
+        let sig_count = d.pointer("/_meta/signals_processed").and_then(|c| c.as_u64()).unwrap_or(0);
+        let focus_depth = count_of(&detail, "attention", "focus_depth")
+            .max(count_of(&detail, "focus_stack", "depth"));
+        let transitions = count_of(&detail, "observer", "count").max(count_of(&detail, "transitions", "count"));
+        let health = d.pointer("/health/status").and_then(|s| s.as_str()).unwrap_or("—");
+        let curiosity = count_of(&detail, "curiosity", "count");
+        let mood_samples = count_of(&detail, "mood", "count");
+
+        lines.push(kv("signals tracked", &fmt_int(sig_count as i64)));
+        lines.push(kv("transitions", &fmt_int(transitions)));
+        lines.push(kv("focus depth", &fmt_int(focus_depth)));
+        lines.push(kv("curiosity items", &fmt_int(curiosity)));
+        lines.push(kv("mood samples", &fmt_int(mood_samples)));
+        lines.push(kv("health", health));
+    } else {
+        lines.push(Line::from(Span::styled("  Not loaded", Style::default().fg(DIM))));
+    }
+    f.render_widget(Paragraph::new(lines).block(panel("Awareness")).wrap(Wrap { trim: true }), area);
+}
+
+fn render_reasoning_field(f: &mut Frame, detail: Option<&serde_json::Value>, area: Rect) {
+    let mut lines = vec![];
+    if let Some(d) = detail {
+        let beliefs = d.get("beliefs").and_then(|b| b.as_array()).map(|a| a.len()).unwrap_or(0);
+        let principles = d.get("principles").and_then(|b| b.as_array()).map(|a| a.len()).unwrap_or(0);
+        let goals = d.get("goals").and_then(|b| b.as_array()).map(|a| a.len()).unwrap_or(0);
+        let assumptions = d.get("assumptions").and_then(|b| b.as_array()).map(|a| a.len()).unwrap_or(0);
+
+        lines.push(kv("beliefs", &fmt_int(beliefs as i64)));
+        lines.push(kv("principles", &fmt_int(principles as i64)));
+        lines.push(kv("goals", &fmt_int(goals as i64)));
+        lines.push(kv("assumptions", &fmt_int(assumptions as i64)));
+    } else {
+        lines.push(Line::from(Span::styled("  Not loaded", Style::default().fg(DIM))));
+    }
+    f.render_widget(Paragraph::new(lines).block(panel("Reasoning")).wrap(Wrap { trim: true }), area);
+}
+
+fn render_simulation_field(f: &mut Frame, detail: Option<&serde_json::Value>, area: Rect) {
+    let mut lines = vec![];
+    if let Some(_d) = detail {
+        let scenarios = count_of(&detail, "scenarios", "count");
+        let forecasts = count_of(&detail, "forecasts", "count");
+        let assumptions = count_of(&detail, "assumptions", "count").max(count_of(&detail, "assumptions", "count"));
+        let risks = count_of(&detail, "risk", "count").max(count_of(&detail, "risk_assessments", "count"));
+
+        lines.push(kv("scenarios", &fmt_int(scenarios)));
+        lines.push(kv("forecasts", &fmt_int(forecasts)));
+        lines.push(kv("assumptions", &fmt_int(assumptions)));
+        lines.push(kv("risks assessed", &fmt_int(risks)));
+    } else {
+        lines.push(Line::from(Span::styled("  Not loaded", Style::default().fg(DIM))));
+    }
+    f.render_widget(Paragraph::new(lines).block(panel("Simulation")).wrap(Wrap { trim: true }), area);
+}
+
+fn render_graph_field(f: &mut Frame, detail: Option<&serde_json::Value>, area: Rect) {
+    let mut lines = vec![];
+    if let Some(d) = detail {
+        let entities = d.get("entity_count").and_then(|c| c.as_u64())
+            .or_else(|| d.get("entities").and_then(|a| a.as_array().map(|a| a.len() as u64)))
+            .unwrap_or(0);
+        let relations = d.get("relation_count").and_then(|c| c.as_u64())
+            .or_else(|| d.get("relations").and_then(|a| a.as_array().map(|a| a.len() as u64)))
+            .or_else(|| d.get("links").and_then(|a| a.as_array().map(|a| a.len() as u64)))
+            .unwrap_or(0);
+        let density = if entities > 0 { relations as f64 / entities as f64 } else { 0.0 };
+
+        lines.push(kv("entities", &fmt_int(entities as i64)));
+        lines.push(kv("relations", &fmt_int(relations as i64)));
+        lines.push(kv("density", &format!("{density:.2}")));
+
+        if let Some(nodes) = d.get("nodes").and_then(|a| a.as_array()) {
+            let top: Vec<&serde_json::Value> = nodes.iter().take(5).collect();
+            if !top.is_empty() {
+                lines.push(Line::from(Span::raw("")));
+                lines.push(head("Top entities"));
+                for n in top {
+                    let name = n.get("name").and_then(|s| s.as_str()).unwrap_or("?");
+                    let deg = n.get("degree").and_then(|c| c.as_i64()).unwrap_or(0);
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("  {} ", fmt_int(deg)), Style::default().fg(CYAN).bold()),
+                        Span::styled(truncate(name, 40), Style::default().fg(TEXT)),
+                    ]));
+                }
+            }
+        }
     } else {
         lines.push(Line::from(Span::styled("  Not loaded", Style::default().fg(DIM))));
     }
     f.render_widget(Paragraph::new(lines).block(panel("Knowledge Graph")).wrap(Wrap { trim: true }), area);
 }
 
-fn draw_core_detail(f: &mut Frame, detail: Option<&serde_json::Value>, area: Rect) {
-    draw_field_card(f, "Core", detail, area);
+fn render_core_field(f: &mut Frame, detail: Option<&serde_json::Value>, area: Rect) {
+    let mut lines = vec![];
+    if let Some(d) = detail {
+        let kernel = d.pointer("/config/rest_api_enabled").and_then(|b| b.as_bool()).unwrap_or(false);
+        let bus_sigs = d.pointer("/event_bus/signal_count").and_then(|c| c.as_u64()).unwrap_or(0);
+        let runtime = d.pointer("/runtime/tasks_count").and_then(|c| c.as_u64()).unwrap_or(0);
+        let fields = d.pointer("/config/fields_count").and_then(|c| c.as_u64()).unwrap_or(0);
+        let plugins = d.pointer("/config/plugins_count").and_then(|c| c.as_u64()).unwrap_or(0);
+
+        lines.push(kv("kernel", if kernel { "running" } else { "stopped" }));
+        lines.push(kv("bus signals", &fmt_int(bus_sigs as i64)));
+        lines.push(kv("tasks", &fmt_int(runtime as i64)));
+        lines.push(kv("fields", &fmt_int(fields as i64)));
+        lines.push(kv("plugins", &fmt_int(plugins as i64)));
+    } else {
+        lines.push(Line::from(Span::styled("  Not loaded", Style::default().fg(DIM))));
+    }
+    f.render_widget(Paragraph::new(lines).block(panel("Core")).wrap(Wrap { trim: true }), area);
 }
 
 // ============================================================================

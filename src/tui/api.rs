@@ -136,7 +136,23 @@ impl Client {
         }
     }
 
-    // ---- writes ----------------------------------------------------------
+    // ---- additional data -----------------------------------------------
+
+    pub fn memory_state(&self) -> Result<serde_json::Value> {
+        self.get("/api/memories")
+    }
+
+    pub fn episodes(&self) -> Result<serde_json::Value> {
+        self.get("/api/episodes")
+    }
+
+    pub fn identity(&self) -> Result<serde_json::Value> {
+        self.get("/api/identity")
+    }
+
+    pub fn signal_stats(&self) -> Result<serde_json::Value> {
+        self.get("/api/stats/signals")
+    }
 
     pub fn ingest(&self, text: &str) -> Result<()> {
         let _: serde_json::Value = self.post("/api/ingest", serde_json::json!({ "text": text }))?;
