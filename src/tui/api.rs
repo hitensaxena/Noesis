@@ -97,7 +97,7 @@ impl Client {
             "memory" => self.get("/api/memory/detail"),
             "agency" => self.get("/api/agency/detail"),
             "awareness" => self.get("/api/awareness/detail"),
-            "reasoning" => self.get("/api/reasoning/detail"),
+            "reasoning" => self.get("/api/cognition/meta"),
             "simulation" => self.get("/api/simulation/detail"),
             "graph" => self.get("/api/graph"),
             "core" => self.get("/api/core/detail"),
