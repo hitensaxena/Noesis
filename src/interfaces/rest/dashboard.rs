@@ -244,6 +244,31 @@ pub fn dashboard_html() -> &'static str {
     .header { flex-wrap: wrap; }
   }
 
+  /* Cascade flow visualization */
+  .cf-group { margin-bottom: 12px; }
+  .cf-group-title { font-size:0.72rem; color:var(--accent2); margin-bottom:4px; font-weight:600; text-transform:uppercase; letter-spacing:0.3px; }
+  .cf-row { display:flex; gap:4px; flex-wrap:wrap; }
+  .cf-node {
+    display:inline-flex; align-items:center; gap:4px; padding:3px 8px; border-radius:4px;
+    font-size:0.68rem; font-family:'SF Mono','Fira Code',monospace; border:1px solid var(--surface3);
+    background:var(--surface2); transition:all 0.2s; cursor:default;
+  }
+  .cf-node:hover { border-color:var(--accent); transform:translateY(-1px); }
+  .cf-node .cf-count { font-weight:700; min-width:18px; text-align:right; }
+  .cf-node .cf-name { color:var(--text); max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .cf-arrow { color:var(--text-muted); font-size:0.6rem; padding:0 2px; align-self:center; }
+
+  /* Cascade field groups - colors match signal type prefixes */
+  .cf-memory .cf-count { color:#2ed573; }
+  .cf-identity .cf-count { color:#6c63ff; }
+  .cf-agency .cf-count { color:#ffa500; }
+  .cf-awareness .cf-count { color:#00d4aa; }
+  .cf-reasoning .cf-count { color:#ff6b9d; }
+  .cf-action .cf-count { color:#ff4757; }
+  .cf-simulation .cf-count { color:#a855f7; }
+  .cf-kernel .cf-count { color:#8888aa; }
+  .cf-generic .cf-count { color:#8888aa; }
+
   /* Scrollbar */
   ::-webkit-scrollbar { width: 6px; height: 6px; }
   ::-webkit-scrollbar-track { background: var(--bg); }
@@ -311,20 +336,28 @@ pub fn dashboard_html() -> &'static str {
         </div>
       </div>
     </div>
+    <!-- Cascade Flow Visualization -->
+    <div class="panel" style="min-width:100%;">
+      <h2>Signal Cascade Flow</h2>
+      <div id="cascadeFlow" style="font-size:0.75rem;">
+        <div class="text-dim" style="padding:8px;text-align:center;">Loading cascade data...</div>
+      </div>
+      <div id="cascadeLegend" style="display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;font-size:0.65rem;"></div>
+    </div>
   </div>
 
   <!-- ====== VIEW: Fields ====== -->
   <div class="view" id="view-fields">
-    <div class="panel-row">
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;" id="fieldChips">
+      <div class="text-dim" style="font-size:0.8rem;padding:8px;">Loading fields...</div>
+    </div>
+    <div id="fieldDetailArea" style="display:none;">
       <div class="panel">
-        <h2>Field Inspector</h2>
-        <div id="fieldList"></div>
-      </div>
-      <div class="panel">
-        <h2>Raw State</h2>
-        <div id="fieldStateDetail">
-          <div class="text-dim" style="font-size:0.8rem;">Click a field to inspect its state.</div>
+        <div id="fieldDetailHeader" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+          <h2 id="fieldDetailTitle" style="color:var(--accent);margin:0;">Field</h2>
+          <button class="btn btn-sm" onclick="document.getElementById('fieldDetailArea').style.display='none';document.getElementById('fieldChips').style.display='';">Close</button>
         </div>
+        <div id="fieldDetailContent"></div>
       </div>
     </div>
   </div>
@@ -458,7 +491,9 @@ pub fn dashboard_html() -> &'static str {
 // ============================================================
 // State
 // ============================================================
-const API = '';
+const API = "";
+const AUTH = "Bearer sk-0b29553a15600589-a12a35-70230fbc";
+const AUTH_HEADER = { "Authorization": AUTH };
 let activeTab = 'overview';
 let fields = [];
 let signalCount = 0;
@@ -475,7 +510,8 @@ let signalRateTimestamps = [];
 // ============================================================
 const $ = id => document.getElementById(id);
 const api = async (url, opts) => {
-  const r = await fetch(API + url, opts);
+  const headers = opts?.headers || {};
+  const r = await fetch(API + url, { ...opts, headers: { ...headers, ...AUTH_HEADER } });
   if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
   return r.json();
 };
@@ -497,6 +533,7 @@ document.querySelectorAll('.tab').forEach(tab => {
     if (activeTab === 'metrics') loadMetrics();
     if (activeTab === 'processors') loadProcessors();
     if (activeTab === 'plugins') loadPlugins();
+    if (activeTab === 'fields') loadFields();
   });
 });
 
@@ -530,57 +567,70 @@ async function refreshOverview() {
 
   try {
     const ov = await api('/api/observability/overview');
-    const total = ov.signals_processed && ov.signals_processed.total;
+    const total = ov.signals_total;
     $('ov-sys-total').textContent = fmt(total);
   } catch(e) {}
 
-  // Field detail cards
+  // Helper: safe nested property access
+  function getCount(obj, path) {
+    if (!obj) return 0;
+    var parts = path.split('.');
+    var cur = obj;
+    for (var i = 0; i < parts.length; i++) {
+      if (cur === null || cur === undefined) return 0;
+      cur = cur[parts[i]];
+    }
+    if (cur === undefined || cur === null) return 0;
+    if (typeof cur === 'number') return cur;
+    if (typeof cur === 'object') {
+      if (Array.isArray(cur)) return cur.length;
+      if (cur.count !== undefined) return cur.count;
+      if (cur.total !== undefined) return cur.total;
+      if (cur.length !== undefined) return cur.length;
+      if (cur.active !== undefined) return cur.active;
+      if (cur.depth !== undefined) return cur.depth;
+      return Object.keys(cur).length;
+    }
+    return 0;
+  }
+
+  // Field cards with nested path support
   const fDefs = [
-    {key:'memory', ep:'/api/memory/detail', stats:['episodic','semantic']},
-    {key:'identity', ep:'/api/identity/detail', stats:['beliefs','traits']},
-    {key:'agency', ep:'/api/agency/detail', stats:['goals','projects']},
-    {key:'action', ep:'/api/awareness/detail', alt:'action'},
-    {key:'awareness', ep:'/api/awareness/detail', stats:['attention','curiosity']},
-    {key:'reasoning', ep:'/api/cognition/meta'},
-    {key:'simulation', ep:'/api/simulation/detail', stats:['scenarios','forecasts']},
-    {key:'graph', ep:'/api/graph', stats:['entity_count','relation_count']},
+    {key:'memory', ep:'/api/memory/detail', fields:'episodic.count', sub:'semantic.count'},
+    {key:'identity', ep:'/api/identity/detail', fields:'beliefs.count', sub:'traits.count'},
+    {key:'agency', ep:'/api/agency/detail', fields:'goals.active', sub:'goals.items.length'},
+    {key:'action', ep:'/api/core/detail', fields:'config.features.length', sub:'config.rest_api_enabled'},
+    {key:'awareness', ep:'/api/awareness/detail', fields:'attention.focus_stack.depth', sub:'curiosity.count'},
+    {key:'reasoning', ep:'/api/cognition/meta', fields:'insights.length', sub:'decisions.length'},
+    {key:'simulation', ep:'/api/simulation/detail', fields:'scenarios.count', sub:'forecasts.count'},
+    {key:'graph', ep:'/api/graph', fields:'graph.entity_count', sub:'graph.relation_count'},
   ];
   for (const f of fDefs) {
-    const statEl = $('ov-'+f.key);
-    const subEl = $('ov-sub-'+f.key);
+    const statEl = document.getElementById('ov-'+f.key);
+    const subEl = document.getElementById('ov-sub-'+f.key);
     try {
       const data = await api(f.ep);
-      if (f.key === 'graph') {
-        statEl.textContent = fmt(data.entity_count) + ' / ' + fmt(data.relation_count);
-      } else if (f.key === 'reasoning') {
-        statEl.textContent = '✓';
-        subEl.textContent = 'metacognition active';
-      } else if (f.alt) {
-        statEl.textContent = '—';
-        subEl.textContent = 'via awareness detail';
-      } else {
-        const parts = f.stats.map(s => {
-          const v = data[s];
-          if (typeof v === 'object' && v.count !== undefined) return v.count;
-          if (typeof v === 'object' && v.total !== undefined) return v.total;
-          if (typeof v === 'number') return v;
-          return 0;
-        });
-        statEl.textContent = parts.join(' / ');
-        subEl.textContent = f.stats.join(' / ');
-      }
+      const v1 = getCount(data, f.fields);
+      const v2 = getCount(data, f.sub);
+      statEl.textContent = v1 + ' / ' + v2;
+      subEl.textContent = f.sub.split('.').pop();
     } catch(e) {
-      statEl.textContent = 'err';
-      subEl.textContent = e.message;
+      statEl.textContent = '—';
+      subEl.textContent = f.key + ' awaiting data';
     }
   }
+
+  // Cascade flow visualization
+  try {
+    signalStats = await api('/api/observability/signals');
+  } catch(e) {}
+  renderCascadeFlow();
 
   // Signal rate
   updateSignalRate();
 }
 
-// ============================================================
-// Signal Rate Tracking
+// ============================================================// Signal Rate Tracking
 // ============================================================
 function updateSignalRate() {
   const now = Date.now();
@@ -605,6 +655,90 @@ function updateSignalRate() {
       <span style="font-size:0.6rem;color:var(--text-dim);width:24px;">${b}</span>
     </div>`
   ).join('');
+}
+
+// ============================================================
+// Cascade Flow Visualization
+// ============================================================
+var signalStats = null;
+
+function renderCascadeFlow() {
+  try {
+    var stats = signalStats || {};
+    var groups = {
+      memory: [], identity: [], agency: [], awareness: [],
+      reasoning: [], action: [], simulation: [], kernel: []
+    };
+    var groupNames = {
+      memory:'Memory', identity:'Identity', agency:'Agency', awareness:'Awareness',
+      reasoning:'Reasoning', action:'Action', simulation:'Simulation', kernel:'Kernel'
+    };
+    var groupColors = {
+      memory:'#2ed573', identity:'#6c63ff', agency:'#ffa500', awareness:'#00d4aa',
+      reasoning:'#ff6b9d', action:'#ff4757', simulation:'#a855f7', kernel:'#8888aa'
+    };
+    var groupIcons = {
+      memory:'📀', identity:'🧑', agency:'🎯', awareness:'💡',
+      reasoning:'🧠', action:'⚡', simulation:'🔮', kernel:'⚙️'
+    };
+
+    for (var key in stats) {
+      var val = stats[key];
+      if (typeof val !== 'number') continue;
+      var prefix = key.split('.')[0];
+      var group = groups[prefix];
+      if (group) group.push({key:key, val:val});
+    }
+
+    for (var g in groups) {
+      groups[g].sort(function(a,b) { return b.val - a.val; });
+    }
+
+    var flowEl = document.getElementById('cascadeFlow');
+    var legendEl = document.getElementById('cascadeLegend');
+    var html = '';
+    var legendHtml = '';
+
+    for (var group in groups) {
+      var items = groups[group];
+      if (items.length === 0) continue;
+      var icon = groupIcons[group] || '○';
+      var name = groupNames[group] || group;
+      var color = groupColors[group] || '#8888aa';
+      var total = 0;
+      for (var i = 0; i < items.length; i++) total += items[i].val;
+
+      html += '<div class="cf-group">';
+      html += '<div class="cf-group-title">' + icon + ' ' + name + ' (' + total + ')</div>';
+      html += '<div class="cf-row">';
+      for (var i = 0; i < Math.min(items.length, 10); i++) {
+        var item = items[i];
+        var shortName = item.key.split('.').slice(1).join('.');
+        html += '<span class="cf-node cf-' + group + '">';
+        html += '<span class="cf-count">' + item.val + '</span>';
+        html += '<span class="cf-name" title="' + item.key + '">' + shortName + '</span>';
+        html += '</span>';
+      }
+      if (items.length > 10) {
+        html += '<span class="cf-node" style="border-color:transparent;">+' + (items.length - 10) + ' more</span>';
+      }
+      html += '</div></div>';
+
+      legendHtml += '<span style="display:inline-flex;align-items:center;gap:3px;">';
+      legendHtml += '<span style="width:8px;height:8px;border-radius:50%;display:inline-block;background:' + color + ';"></span>';
+      legendHtml += '<span style="color:var(--text-dim);font-size:0.65rem;">' + name + '</span>';
+      legendHtml += '</span> ';
+    }
+
+    if (!html) {
+      html = '<div class="text-dim" style="text-align:center;padding:8px;">No signal data yet</div>';
+    }
+
+    flowEl.innerHTML = html;
+    legendEl.innerHTML = legendHtml;
+  } catch(e) {
+    document.getElementById('cascadeFlow').innerHTML = '<div class="text-dim">Cascade data pending...</div>';
+  }
 }
 
 // ============================================================
@@ -677,44 +811,154 @@ function clearSignals() {
 // ============================================================
 // Fields View
 // ============================================================
+var fieldEndpoints = {
+  memory: '/api/memory/detail',
+  identity: '/api/identity/detail',
+  agency: '/api/agency/detail',
+  action: '/api/awareness/detail',
+  awareness: '/api/awareness/detail',
+  reasoning: '/api/cognition/meta',
+  simulation: '/api/simulation/detail',
+  knowledge_graph: '/api/graph',
+};
+
+var fieldIcons = {
+  memory: '📀', identity: '🧑', agency: '🎯', action: '⚡',
+  awareness: '💡', reasoning: '🧠', simulation: '🔮', knowledge_graph: '🌐'
+};
+
+function renderFieldObj(v) {
+  if (v === null || v === undefined) return '<span class="text-dim">—</span>';
+  if (typeof v === 'string') return esc(v);
+  if (typeof v === 'number') return '<span style="color:var(--accent2);font-weight:600;">' + v + '</span>';
+  if (typeof v === 'boolean') return v ? '✓' : '✗';
+  if (Array.isArray(v)) {
+    if (v.length === 0) return '<span class="text-dim">empty</span>';
+    return '<div style="margin-left:8px;">' + v.map(function(item) {
+      if (typeof item === 'object') {
+        var txt = '';
+        for (var k in item) {
+          if (k === 'meta' || k === 'id' || k === 'episode_ids' || k === 'narrative_id' || k === 'curiosity_id' || k === 'goal_id' || k === 'edge_id' || k === 'entity_id') continue;
+          var val = typeof item[k] === 'object' ? JSON.stringify(item[k]).slice(0,60) : item[k];
+          if (String(val).length > 80) val = String(val).slice(0,80) + '…';
+          txt += '<span style="color:var(--text-dim);font-size:0.68rem;">' + esc(k) + ': </span><span style="font-size:0.68rem;">' + esc(val) + '</span> ';
+        }
+        return '<div style="padding:2px 0;border-bottom:1px solid var(--surface2);">' + txt + '</div>';
+      }
+      return '<div style="padding:2px 0;">' + esc(item) + '</div>';
+    }).join('') + '</div>';
+  }
+  if (typeof v === 'object') {
+    var keys = Object.keys(v);
+    if (keys.length === 0) return '<span class="text-dim">empty</span>';
+    var html = '<div style="margin-left:4px;">';
+    for (var i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      if (k === '_meta' || k === 'note') continue;
+      var val = v[k];
+      var display = renderFieldObj(val);
+      html += '<div style="padding:1px 0;"><span style="color:var(--text-dim);font-size:0.72rem;">' + esc(k) + ': </span>' + display + '</div>';
+    }
+    html += '</div>';
+    return html;
+  }
+  return esc(String(v));
+}
+
+function fieldSummary(name, data) {
+  try {
+    switch(name) {
+      case 'memory':
+        var ep = ((data.episodic||{}).count||0);
+        var sem = ((data.semantic||{}).count||0);
+        var graph = ((data.graph||{}).entities||0);
+        return ep + ' ep, ' + sem + ' sem, ' + graph + ' graph';
+      case 'identity':
+        var b = ((data.beliefs||{}).items||[]).length;
+        var t = ((data.traits||{}).items||[]).length;
+        var v = ((data.values||{}).items||[]).length;
+        return b + ' beliefs, ' + t + ' traits, ' + v + ' values';
+      case 'agency':
+        var g = (data.goals||{}).items||[];
+        var p = ((data.projects||{}).count||0);
+        return g.length + ' goals, ' + p + ' projects';
+      case 'awareness':
+        var f = (data.attention||{}).focus_stack||{};
+        var c = ((data.curiosity||{}).count||0);
+        return 'focus:' + (f.depth||0) + ', curiosity:' + c;
+      case 'reasoning':
+        var i = (data.insights||[]).length;
+        var d = (data.decisions||[]).length;
+        return i + ' insights, ' + d + ' decisions';
+      case 'simulation':
+        var s = ((data.scenarios||{}).count||0);
+        var a = ((data.assumptions||{}).count||0);
+        return s + ' scenarios, ' + a + ' assumptions';
+      case 'knowledge_graph':
+        var g = data.graph || data;
+        return (g.entity_count||0) + ' entities, ' + (g.relation_count||0) + ' relations';
+      default: return '';
+    }
+  } catch(e) { return ''; }
+}
+
 async function loadFields() {
   try {
-    const stats = await api('/api/stats');
-    fields = stats.field_names || [];
-    const list = $('fieldList');
-    list.innerHTML = fields.map(f =>
-      `<div style="padding:8px 12px;border-bottom:var(--border);cursor:pointer;display:flex;justify-content:space-between;align-items:center;"
-            onclick="inspectField('${f}')" onmouseover="this.style.background='var(--surface2)'"
-            onmouseout="this.style.background=''">
-        <span style="font-weight:500;">${f}</span>
-        <span style="font-size:0.65rem;color:var(--text-dim);">click to inspect →</span>
-      </div>`
-    ).join('') || '<div class="text-dim">No fields registered</div>';
+    var stats = await api('/api/stats');
+    var names = stats.field_names || [];
+    var chips = document.getElementById('fieldChips');
+    var html = '';
+    for (var i = 0; i < names.length; i++) {
+      var name = names[i];
+      var icon = fieldIcons[name] || '○';
+      try {
+        var ep = fieldEndpoints[name] || '';
+        var data = ep ? await api(ep) : {};
+        var summary = fieldSummary(name, data);
+        html += '<div class="cf-node" onclick="showFieldDetail(\'' + name + '\')" style="cursor:pointer;flex:1;min-width:160px;">';
+        html += '<span style="font-size:0.8rem;">' + icon + ' <b>' + name + '</b></span>';
+        html += '<br><span style="font-size:0.65rem;color:var(--text-dim);white-space:nowrap;">' + summary + '</span>';
+        html += '</div>';
+      } catch(e) {
+        html += '<div class="cf-node" onclick="showFieldDetail(\'' + name + '\')" style="cursor:pointer;opacity:0.6;">' + icon + ' ' + name + ' <span class="text-dim">(pending)</span></div>';
+      }
+    }
+    chips.innerHTML = html || '<div class="text-dim">No fields</div>';
   } catch(e) {
-    $('fieldList').innerHTML = `<div class="error-msg">${e.message}</div>`;
+    document.getElementById('fieldChips').innerHTML = '<div class="error-msg">' + e.message + '</div>';
   }
 }
 
-async function inspectField(name) {
-  const detail = $('fieldStateDetail');
-  detail.innerHTML = '<div class="loading">Loading...</div>';
-  const endpoints = {
-    memory: '/api/memory/detail',
-    identity: '/api/identity/detail',
-    agency: '/api/agency/detail',
-    action: '/api/awareness/detail',
-    awareness: '/api/awareness/detail',
-    reasoning: '/api/cognition/meta',
-    simulation: '/api/simulation/detail',
-    knowledge_graph: '/api/graph',
-  };
-  const ep = endpoints[name] || `/api/${name}/detail`;
+async function showFieldDetail(name) {
+  document.getElementById('fieldChips').style.display = 'none';
+  document.getElementById('fieldDetailArea').style.display = 'block';
+  document.getElementById('fieldDetailTitle').textContent = name;
+  var content = document.getElementById('fieldDetailContent');
+  content.innerHTML = '<div class="loading">Loading...</div>';
+
   try {
-    const data = await api(ep);
-    detail.innerHTML = `<h3 style="color:var(--accent);margin-bottom:8px;">${name}</h3>
-      <pre style="font-size:0.68rem;line-height:1.4;color:var(--text-dim);overflow-x:auto;">${esc(JSON.stringify(data, null, 2))}</pre>`;
+    var ep = fieldEndpoints[name] || '';
+    var data = ep ? await api(ep) : {};
+    var html = '';
+    var keys = Object.keys(data);
+
+    for (var i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      if (k === '_meta') continue;
+
+      var val = data[k];
+      html += '<div style="margin-bottom:8px;background:var(--surface2);border-radius:var(--radius);padding:8px;">';
+      html += '<div style="font-size:0.75rem;color:var(--accent2);font-weight:600;text-transform:uppercase;letter-spacing:0.3px;margin-bottom:4px;">' + esc(k) + '</div>';
+      html += renderFieldObj(val);
+      if (typeof val === 'object' && val !== null && val.note) {
+        html += '<div style="font-size:0.65rem;color:var(--text-dim);margin-top:4px;font-style:italic;">' + esc(val.note) + '</div>';
+      }
+      html += '</div>';
+    }
+
+    content.innerHTML = html || '<div class="text-dim">No field data</div>';
   } catch(e) {
-    detail.innerHTML = `<div class="error-msg">${e.message}</div>`;
+    content.innerHTML = '<div class="error-msg">' + e.message + '</div>';
   }
 }
 

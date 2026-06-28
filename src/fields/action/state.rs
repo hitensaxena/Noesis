@@ -1,19 +1,12 @@
 use serde::{Deserialize, Serialize};
 
-/// A project tracked by the Action field.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Project {
-    pub name: String,
-    pub description: String,
-}
-
-/// A task tracked by the Action field.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Task {
-    pub name: String,
-    pub description: String,
-    pub priority: u8,
-}
+// Re-export domain types for cohesive state access
+pub use super::domains::projects::Project;
+pub use super::domains::plans::{Plan, PlanStatus};
+pub use super::domains::tasks::Task;
+pub use super::domains::executions::Execution;
+pub use super::domains::evaluations::Evaluation;
+pub use super::domains::risk::RiskAssessment;
 
 /// State of the Action Field.
 #[derive(Debug, Clone, Serialize, Deserialize)]

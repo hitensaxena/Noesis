@@ -80,27 +80,37 @@ fn render_system_card(f: &mut Frame, app: &TuiApp, area: Rect) {
 }
 
 fn render_field_summaries(f: &mut Frame, app: &TuiApp, area: Rect) {
-    // Row 1: Identity, Memory, Agency in a 2-row grid
-    let row1 = Layout::default()
+    // Row 1: Identity, Memory, Agency in a 3-row grid (now 8 fields)
+    let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)])
+        .constraints([
+            Constraint::Ratio(1, 3),
+            Constraint::Ratio(1, 3),
+            Constraint::Ratio(1, 3),
+        ])
         .split(area);
 
-    let top = Layout::default()
+    let row1 = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Ratio(1, 3), Constraint::Ratio(1, 3), Constraint::Ratio(1, 3)])
-        .split(row1[0]);
-    let bottom = Layout::default()
+        .split(rows[0]);
+    let row2 = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Ratio(1, 3), Constraint::Ratio(1, 3), Constraint::Ratio(1, 3)])
-        .split(row1[1]);
+        .split(rows[1]);
+    let row3 = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Ratio(1, 3), Constraint::Ratio(1, 3), Constraint::Ratio(1, 3)])
+        .split(rows[2]);
 
-    render_identity_summary(f, app, top[0]);
-    render_memory_summary(f, app, top[1]);
-    render_agency_summary(f, app, top[2]);
-    render_awareness_summary(f, app, bottom[0]);
-    render_simulation_summary(f, app, bottom[1]);
-    render_core_summary(f, app, bottom[2]);
+    render_identity_summary(f, app, row1[0]);
+    render_memory_summary(f, app, row1[1]);
+    render_agency_summary(f, app, row1[2]);
+    render_awareness_summary(f, app, row2[0]);
+    render_reasoning_summary(f, app, row2[1]);
+    render_simulation_summary(f, app, row2[2]);
+    render_knowledge_graph_summary(f, app, row3[0]);
+    render_core_summary(f, app, row3[1]);
 }
 
 fn render_identity_summary(f: &mut Frame, app: &TuiApp, area: Rect) {
@@ -164,8 +174,10 @@ fn render_memory_summary(f: &mut Frame, app: &TuiApp, area: Rect) {
 
 fn render_agency_summary(f: &mut Frame, app: &TuiApp, area: Rect) {
     let exec = &app.agency_detail;
-    let goals = exec.pointer("/goals/total").and_then(|c| c.as_u64()).unwrap_or(0);
-    let active = exec.pointer("/goals/active").and_then(|c| c.as_u64()).unwrap_or(0);
+    let goals = exec.pointer("/goals/active").and_then(|c| c.as_u64())
+        .or_else(|| exec.pointer("/goals/items").and_then(|v| v.as_array().map(|a| a.len() as u64)))
+        .unwrap_or(0);
+    let active = exec.pointer("/goals/active").and_then(|c| c.as_u64()).unwrap_or(goals);
     let pursuits = exec.pointer("/active_pursuits/count").and_then(|c| c.as_u64()).unwrap_or(0);
 
     let has_data = goals > 0;
@@ -249,12 +261,82 @@ fn render_simulation_summary(f: &mut Frame, app: &TuiApp, area: Rect) {
     f.render_widget(Paragraph::new(text).block(block), area);
 }
 
+fn render_reasoning_summary(f: &mut Frame, app: &TuiApp, area: Rect) {
+    let reas = &app.reasoning_detail;
+    let insights = reas.pointer("/insights/count").and_then(|c| c.as_u64())
+        .or_else(|| reas.get("insights").and_then(|v| v.as_array().map(|a| a.len() as u64)))
+        .unwrap_or(0);
+    let decisions = reas.pointer("/decisions/count").and_then(|c| c.as_u64())
+        .or_else(|| reas.get("decisions").and_then(|v| v.as_array().map(|a| a.len() as u64)))
+        .unwrap_or(0);
+    let mental_models = reas.pointer("/mental_models/count").and_then(|c| c.as_u64())
+        .or_else(|| reas.get("models").and_then(|v| v.as_array().map(|a| a.len() as u64)))
+        .unwrap_or(0);
+
+    let has_data = insights > 0 || decisions > 0;
+    let block = Block::default()
+        .title(format!(" {} Reasoning ", if has_data { "●"} else { "○" }))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(if has_data { colors::GREEN } else { colors::DIM }));
+
+    let text = vec![
+        Line::from(vec![
+            Span::styled(format!("{} insights", insights), Style::default().fg(if insights > 0 { colors::GREEN } else { colors::DIM })),
+        ]),
+        Line::from(vec![
+            Span::styled(format!("{} decisions", decisions), Style::default().fg(if decisions > 0 { colors::ACCENT } else { colors::DIM })),
+        ]),
+        Line::from(vec![
+            Span::styled(format!("{} models", mental_models), Style::default().fg(if mental_models > 0 { colors::YELLOW } else { colors::DIM })),
+        ]),
+    ];
+
+    f.render_widget(Paragraph::new(text).block(block), area);
+}
+
+fn render_knowledge_graph_summary(f: &mut Frame, app: &TuiApp, area: Rect) {
+    let graph = &app.graph_detail;
+    let base = graph.get("graph").or(Some(graph)).and_then(|g| g.as_object()).cloned().unwrap_or_default();
+    let entities = base.get("entity_count").and_then(|c| c.as_u64())
+        .or_else(|| base.get("entities").and_then(|v| v.as_array().map(|a| a.len() as u64)))
+        .unwrap_or(0);
+    let relations = base.get("relation_count").and_then(|c| c.as_u64())
+        .or_else(|| base.get("relations").and_then(|v| v.as_array().map(|a| a.len() as u64)))
+        .or_else(|| base.get("links").and_then(|v| v.as_array().map(|a| a.len() as u64)))
+        .unwrap_or(0);
+
+    // Also show memory-local graph entities
+    let mem = &app.memory_detail;
+    let mem_ents = mem.pointer("/graph/entities").and_then(|c| c.as_u64()).unwrap_or(0);
+
+    let has_data = entities > 0 || mem_ents > 0;
+    let block = Block::default()
+        .title(format!(" {} Knowledge Graph ", if has_data { "●"} else { "○" }))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(if has_data { colors::GREEN } else { colors::DIM }));
+
+    let text = vec![
+        Line::from(vec![
+            Span::styled(format!("{} entities", entities + mem_ents), Style::default().fg(if entities > 0 { colors::GREEN } else { colors::DIM })),
+        ]),
+        Line::from(vec![
+            Span::styled(format!("{} relations", relations), Style::default().fg(if relations > 0 { colors::ACCENT } else { colors::DIM })),
+        ]),
+        Line::from(Span::raw("")),
+    ];
+
+    f.render_widget(Paragraph::new(text).block(block), area);
+}
+
 fn render_core_summary(f: &mut Frame, app: &TuiApp, area: Rect) {
     let core = &app.core_detail;
-    let kernel = core.pointer("/kernel/status").and_then(|s| s.as_str()).unwrap_or("—");
+    let state = core.get("config").and_then(|c| c.get("rest_api_enabled").and_then(|v| v.as_bool())).unwrap_or(false);
+    let kernel = if state { "running" } else { "stopped" };
     let bus_sigs = core.pointer("/event_bus/signal_count").and_then(|c| c.as_u64()).unwrap_or(0);
     let runtime = core.pointer("/runtime/tasks_count").and_then(|c| c.as_u64()).unwrap_or(0);
-    let permissions = core.pointer("/permissions/mode").and_then(|s| s.as_str()).unwrap_or("—");
+    let permissions = "open";
 
     let block = Block::default()
         .title(" ♦ Core ")
@@ -329,13 +411,14 @@ fn render_dashboard_detail(f: &mut Frame, app: &TuiApp, area: Rect) {
         .border_style(Style::default().fg(colors::GREEN));
 
     let signal_types = app.signal_types.get("count").and_then(|c| c.as_u64()).unwrap_or(0);
-    let total_signals = app.core_detail.pointer("/metrics/signals_processed").and_then(|c| c.as_u64()).unwrap_or(0);
+    let total_signals = app.obs.get("signals_total").and_then(|c| c.as_u64())
+        .or_else(|| app.obs.get("signals_processed").and_then(|v| v.as_object())
+            .map(|o| o.values().filter_map(|v| v.as_u64()).sum::<u64>()))
+        .unwrap_or(0);
 
-    // Get processor info from core detail
-    let procs_count = app.core_detail.pointer("/registry/processors")
-        .and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
-    let fields_count = app.core_detail.pointer("/registry/fields")
-        .and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+    // Get processor/field info from stats endpoint
+    let procs_count = app.stats.get("processors").and_then(|c| c.as_u64()).unwrap_or(0);
+    let fields_count = app.stats.get("fields").and_then(|c| c.as_u64()).unwrap_or(0);
 
     let lines = vec![
         Line::from(vec![

@@ -11,6 +11,7 @@ use crate::signals::types;
 use crate::signals::BeliefChanged;
 
 pub mod state;
+pub mod domains;
 pub mod processors;
 pub use state::{IdentityFieldState, Belief, Trait};
 

@@ -18,6 +18,11 @@ pub async fn overview(
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
+    let signals_obj = metrics["signals"].clone();
+    let signals_total: u64 = signals_obj.as_object()
+        .map(|obj| obj.values().filter_map(|v| v.as_u64()).sum())
+        .unwrap_or(0);
+
     Json(serde_json::json!({
         "service": "noesis",
         "version": "0.1.0",
@@ -25,7 +30,8 @@ pub async fn overview(
         "fields": state.field_cache.len(),
         "processors": kernel.processors.len(),
         "signal_types": kernel.signal_types.len(),
-        "signals_processed": metrics["signals"],
+        "signals_processed": signals_obj,
+        "signals_total": signals_total,
         "processor_stats": metrics["processors"],
     }))
 }

@@ -1,0 +1,10 @@
+pub mod self_model;
+pub mod beliefs;
+pub mod values;
+pub mod traits;
+pub mod roles;
+pub mod personality;
+pub mod principles;
+pub mod timeline;
+pub mod evolution;
+pub mod narrative_self;

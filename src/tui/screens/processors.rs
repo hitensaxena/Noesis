@@ -28,9 +28,8 @@ fn render_processor_list(f: &mut Frame, app: &TuiApp, area: Rect) {
 
     let mut lines: Vec<Line> = Vec::new();
 
-    // Core detail has processor names
-    let core = &app.core_detail;
-    let proc_names = core.pointer("/registry/processors").and_then(|v| v.as_array()).cloned();
+    // Use stats endpoint for processor names (core detail doesn't have registry paths)
+    let proc_names = app.stats.get("processor_names").and_then(|v| v.as_array()).cloned();
 
     if let Some(procs) = proc_names {
         for proc_val in &procs {

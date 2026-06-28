@@ -8,6 +8,7 @@ use crate::field_runtime::field::Field;
 use crate::field_runtime::context::FieldContext;
 
 pub mod state;
+pub mod domains;
 pub mod processors;
 pub use state::{ActionFieldState, Project, Task};
 

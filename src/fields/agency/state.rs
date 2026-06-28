@@ -1,24 +1,11 @@
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
-/// A goal managed by the system.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Goal {
-    pub id: Uuid,
-    pub description: String,
-    pub priority: u8,
-    pub status: GoalStatus,
-    pub created_at: DateTime<Utc>,
-    pub completed_at: Option<DateTime<Utc>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum GoalStatus {
-    Active,
-    Completed,
-    Abandoned,
-}
+// Re-export domain types for cohesive state access
+pub use super::domains::goals::{Goal, GoalStatus};
+pub use super::domains::priorities::PriorityItem;
+pub use super::domains::strategy::Strategy;
+pub use super::domains::opportunities::Opportunity;
+pub use super::domains::purpose::MissionStatement;
 
 /// State of the Agency Field.
 #[derive(Debug, Clone, Serialize, Deserialize)]

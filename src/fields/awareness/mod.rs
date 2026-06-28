@@ -11,6 +11,7 @@ use crate::signals::awareness::{AttentionShifted, CuriosityDetected, ObserverTra
 use chrono::Utc;
 
 pub mod state;
+pub mod domains;
 pub mod processors;
 pub use state::{AwarenessFieldState, FocusItem, CuriosityItem, TransitionRecord};
 

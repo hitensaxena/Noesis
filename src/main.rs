@@ -76,6 +76,16 @@ const ALL_SIGNAL_TYPES: &[noesis::kernel::signal::SignalType] = &[
     types::BEAT_FAST,
     types::BEAT_MEDIUM,
     types::BEAT_SLOW,
+    // Per-hop cognitive signals
+    types::FACT_EXTRACTED,
+    types::TRAIT_DETECTED,
+    types::MEMORY_DECAYED,
+    types::DEDUP_SKIPPED,
+    types::INDEX_UPDATED,
+    types::EPISODES_RETRIEVED,
+    // Offline/idle beats
+    types::BEAT_SLEEP,
+    types::BEAT_OFFLINE,
 ];
 
 #[tokio::main]
@@ -186,10 +196,11 @@ async fn run_daemon(
     let storage: Arc<dyn noesis::storage::store::Storage> = Arc::new(composite);
     let _field_ctx = FieldContext::new(kernel.event_bus.clone(), storage.clone());
 
-    // Wire the EventBridge for signal persistence
+    // Wire the EventBridge for signal persistence (shared store for both bridge and API)
+    let event_store = create_event_store(storage.clone()).await;
     let event_bridge = std::sync::Arc::new(noesis::storage::event_store::EventBridge::new());
-    if let Some(event_store) = create_event_store(storage.clone()) {
-        let _ = event_bridge.set_store(event_store).await;
+    if let Some(ref es) = event_store {
+        let _ = event_bridge.set_store(es.clone()).await;
     }
     kernel.runtime.spawn("event-bridge", {
         let bus = kernel.event_bus.clone();
@@ -339,7 +350,13 @@ async fn run_daemon(
             }
         });
     }
-    let api_state = api_state.with_event_stream(event_tx);
+    // Wire shared event store to API state for signal history queries
+    let api_state = if let Some(ref es) = event_store {
+        api_state.with_event_stream(event_tx).with_event_store(es.clone())
+    } else {
+        api_state.with_event_stream(event_tx)
+    };
+
     // -----------------------------------------------------------------------
     // Get the CancellationToken for graceful shutdown coordination
     let shutdown_token = kernel.runtime.shutdown_token();
@@ -397,19 +414,14 @@ async fn run_daemon(
             match signal_rx.recv().await {
                 Some(signal) => {
                     let signal_type = signal.signal_type().to_string();
-
-                    cascade_metrics.record_signal(&signal_type);
-
-                    tracing::info!(
-                        "[Cascade] processing root signal: {} (depth={})",
-                        signal_type,
-                        signal.meta().depth,
-                    );
-
                     let start = std::time::Instant::now();
                     let result = field_runtime.process_signal_cascade(&field_ctx, signal).await;
                     let elapsed = start.elapsed();
 
+                    // Record all signal types from the cascade (not just root)
+                    for st in &result.signal_types {
+                        cascade_metrics.record_signal(st);
+                    }
                     cascade_metrics.record_processor_latency("cascade.dispatch", elapsed.as_nanos() as u64);
 
                     if result.total_signals > 1 {
@@ -655,10 +667,38 @@ fn try_serialize_field_state(name: &str, state: &dyn std::any::Any) -> Option<se
     }
 }
 
-/// Create an event store from the available storage backend.
-fn create_event_store(_storage: Arc<dyn noesis::storage::store::Storage>) -> Option<std::sync::Arc<dyn EventStore>> {
-    // For now, always create an in-memory event store
-    // In the future, this could use Postgres or Redis
+/// Create an event store, preferring Postgres when available.
+async fn create_event_store(_storage: Arc<dyn noesis::storage::store::Storage>) -> Option<std::sync::Arc<dyn EventStore>> {
+    // Try Postgres-backed event store first
+    #[cfg(feature = "postgres-redis")]
+    {
+        let pg_env = std::env::var("NOESIS_DATABASE_URL").ok();
+        let pg_url = std::env::var("DATABASE_URL").ok().or(pg_env);
+        if let Some(url) = pg_url {
+            if let Ok(config) = url.parse::<tokio_postgres::Config>() {
+                match noesis::storage::event_store::PostgresEventStore::connect(&config).await {
+                    Ok(store) => {
+                        tracing::info!("[main] PostgresEventStore initialized");
+                        return Some(std::sync::Arc::new(store));
+                    }
+                    Err(e) => tracing::warn!("[main] PostgresEventStore unavailable: {}", e),
+                }
+            }
+        }
+        // Fallback: try the default noesis-pg connection
+        let mut config = tokio_postgres::Config::new();
+        config.host("127.0.0.1").port(5433).dbname("noesis");
+        config.user("noesis").password("noesis");
+        match noesis::storage::event_store::PostgresEventStore::connect(&config).await {
+            Ok(store) => {
+                tracing::info!("[main] PostgresEventStore initialized on :5433");
+                return Some(std::sync::Arc::new(store));
+            }
+            Err(_) => {}
+        }
+    }
+
+    // Fallback: in-memory event store
     Some(std::sync::Arc::new(MemoryEventStore::new()))
 }
 

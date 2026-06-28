@@ -11,6 +11,7 @@ use crate::signals::types;
 use crate::signals::agency::{GoalCreated, GoalCompleted};
 
 pub mod state;
+pub mod domains;
 pub mod processors;
 pub use state::{AgencyFieldState, Goal, GoalStatus};
 

@@ -64,8 +64,18 @@ fn field_data(name: &str, app: &TuiApp) -> (bool, String, &'static str) {
         }
         "agency" => {
             let exec = &app.agency_detail;
-            let g = exec.pointer("/goals/total").and_then(|c| c.as_u64()).unwrap_or(0);
+            let g = exec.pointer("/goals/active").and_then(|c| c.as_u64())
+                .or_else(|| exec.pointer("/goals/items").and_then(|v| v.as_array().map(|a| a.len() as u64)))
+                .unwrap_or(0);
             (g > 0, format!("{}goals", g), "\u{1F3AF}")
+        }
+        "reasoning" => {
+            let r = &app.reasoning_detail;
+            let i = r.get("insights").and_then(|v| v.as_array().map(|a| a.len() as u64)).unwrap_or(0)
+                + r.pointer("/insights/count").and_then(|c| c.as_u64()).unwrap_or(0);
+            let d = r.get("decisions").and_then(|v| v.as_array().map(|a| a.len() as u64)).unwrap_or(0)
+                + r.pointer("/decisions/count").and_then(|c| c.as_u64()).unwrap_or(0);
+            (i + d > 0, format!("{}ins {}dec", i, d), "\u{1F9E0}")
         }
         "awareness" => {
             let aware = &app.awareness_detail;
@@ -123,8 +133,10 @@ fn render_field_detail(f: &mut Frame, app: &TuiApp, area: Rect) {
 
     // Agency
     let exec = &app.agency_detail;
-    let g = exec.pointer("/goals/total").and_then(|c| c.as_u64()).unwrap_or(0);
-    let ga = exec.pointer("/goals/active").and_then(|c| c.as_u64()).unwrap_or(0);
+    let g = exec.pointer("/goals/active").and_then(|c| c.as_u64())
+        .or_else(|| exec.pointer("/goals/items").and_then(|v| v.as_array().map(|a| a.len() as u64)))
+        .unwrap_or(0);
+    let ga = exec.pointer("/goals/active").and_then(|c| c.as_u64()).unwrap_or(g);
     let p = exec.pointer("/active_pursuits/count").and_then(|c| c.as_u64()).unwrap_or(0);
     lines.push(Line::from(vec![
         Span::styled(" \u{1F3AF} Agency: ", Style::default().fg(colors::YELLOW).add_modifier(Modifier::BOLD)),
@@ -153,14 +165,39 @@ fn render_field_detail(f: &mut Frame, app: &TuiApp, area: Rect) {
         Span::styled(format!("{}sc {}as {}wm", sc, asm, wm), Style::default().fg(colors::DIM)),
     ]));
 
-    // Core
-    let core = &app.core_detail;
-    let reg_f = core.pointer("/registry/fields").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
-    let reg_p = core.pointer("/registry/processors").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
-    let reg_s = core.pointer("/registry/signal_types").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+    // Reasoning
+    let reas = &app.reasoning_detail;
+    let r_ins = reas.get("insights").and_then(|v| v.as_array().map(|a| a.len() as u64)).unwrap_or(0)
+        + reas.pointer("/insights/count").and_then(|c| c.as_u64()).unwrap_or(0);
+    let r_dec = reas.get("decisions").and_then(|v| v.as_array().map(|a| a.len() as u64)).unwrap_or(0)
+        + reas.pointer("/decisions/count").and_then(|c| c.as_u64()).unwrap_or(0);
+    let r_hyp = reas.get("hypotheses").and_then(|v| v.as_array().map(|a| a.len() as u64)).unwrap_or(0);
+    lines.push(Line::from(vec![
+        Span::styled(" \u{1F9E0} Reasoning: ", Style::default().fg(colors::ACCENT).add_modifier(Modifier::BOLD)),
+        Span::styled(format!("{}ins {}dec {}hyp", r_ins, r_dec, r_hyp), Style::default().fg(if r_ins > 0 { colors::TEXT } else { colors::DIM })),
+    ]));
+
+    // Knowledge Graph
+    let graph = &app.graph_detail;
+    let g_base = graph.get("graph").or(Some(graph)).and_then(|g| g.as_object()).cloned().unwrap_or_default();
+    let g_ent = g_base.get("entity_count").and_then(|c| c.as_u64())
+        .or_else(|| g_base.get("entities").and_then(|v| v.as_array().map(|a| a.len() as u64)))
+        .unwrap_or(0);
+    let g_rel = g_base.get("relation_count").and_then(|c| c.as_u64())
+        .or_else(|| g_base.get("links").and_then(|v| v.as_array().map(|a| a.len() as u64)))
+        .unwrap_or(0);
+    lines.push(Line::from(vec![
+        Span::styled(" \u{1F578} Knowledge G:", Style::default().fg(colors::GREEN).add_modifier(Modifier::BOLD)),
+        Span::styled(format!("{}ent {}rel", g_ent, g_rel), Style::default().fg(if g_ent > 0 { colors::TEXT } else { colors::DIM })),
+    ]));
+
+    // Core (from stats endpoint)
+    let f_count = app.stats.get("fields").and_then(|c| c.as_u64()).unwrap_or(0);
+    let p_count = app.stats.get("processors").and_then(|c| c.as_u64()).unwrap_or(0);
+    let s_count = app.stats.get("signal_types").and_then(|c| c.as_u64()).unwrap_or(0);
     lines.push(Line::from(vec![
         Span::styled(" \u{2699} Core:      ", Style::default().fg(colors::PRIMARY).add_modifier(Modifier::BOLD)),
-        Span::styled(format!("{}F {}P {}S", reg_f, reg_p, reg_s), Style::default().fg(colors::TEXT)),
+        Span::styled(format!("{}F {}P {}S", f_count, p_count, s_count), Style::default().fg(colors::TEXT)),
     ]));
 
     if lines.is_empty() {

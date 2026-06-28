@@ -30,8 +30,19 @@ pub async fn memory_detail(
         (json!([]), json!([]), 0, 0)
     };
 
-    // Extract graph info
-    let (graph_entities, graph_relations) = if let Some(cached) = &graph_state {
+    // Extract graph info from memory field state (stored via MemoryField::handle_signal)
+    let (graph_entities, graph_relations) = if let Some(cached) = &memory_state {
+        let v = cached.value();
+        (
+            v.get("knowledge_entities").cloned().unwrap_or_else(|| {
+                // Fallback: try the graph field cache
+                graph_state.as_ref().and_then(|c| c.value().get("entities").cloned()).unwrap_or(json!([]))
+            }),
+            v.get("knowledge_relations").cloned().unwrap_or_else(|| {
+                graph_state.as_ref().and_then(|c| c.value().get("relations").cloned()).unwrap_or(json!([]))
+            }),
+        )
+    } else if let Some(cached) = &graph_state {
         let v = cached.value();
         (
             v.get("entities").cloned().unwrap_or(json!([])),

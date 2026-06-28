@@ -25,7 +25,9 @@ pub const DETAIL_NAMES: &[&str] = &[
     "Memory",
     "Agency",
     "Awareness",
+    "Reasoning",
     "Simulation",
+    "Knowledge Graph",
     "Core",
 ];
 
@@ -88,8 +90,13 @@ pub struct TuiApp {
     pub memory_detail: Value,
     pub agency_detail: Value,
     pub awareness_detail: Value,
+    pub reasoning_detail: Value,
     pub simulation_detail: Value,
+    pub graph_detail: Value,
     pub core_detail: Value,
+
+    // Plugin data
+    pub plugins: Value,
 
     // Detail navigation
     pub detail_index: usize,
@@ -129,8 +136,11 @@ impl TuiApp {
             memory_detail: serde_json::json!({}),
             agency_detail: serde_json::json!({}),
             awareness_detail: serde_json::json!({}),
+            reasoning_detail: serde_json::json!({}),
             simulation_detail: serde_json::json!({}),
+            graph_detail: serde_json::json!({}),
             core_detail: serde_json::json!({}),
+            plugins: serde_json::json!({}),
             detail_index: 0,
             auto_refresh: true,
             api_url: api_url.to_string(),
@@ -170,8 +180,11 @@ impl TuiApp {
         if let Ok(d) = self.api.memory_detail().await { self.memory_detail = d; }
         if let Ok(d) = self.api.agency_detail().await { self.agency_detail = d; }
         if let Ok(d) = self.api.awareness_detail().await { self.awareness_detail = d; }
+        if let Ok(d) = self.api.reasoning_detail().await { self.reasoning_detail = d; }
         if let Ok(d) = self.api.simulation_detail().await { self.simulation_detail = d; }
+        if let Ok(d) = self.api.graph_detail().await { self.graph_detail = d; }
         if let Ok(d) = self.api.core_detail().await { self.core_detail = d; }
+        if let Ok(d) = self.api.plugins().await { self.plugins = d; }
 
         let auto = if self.auto_refresh { "" } else { " (paused)" };
         self.status_message = format!("OK ({}s){}", self.refresh_interval.as_secs(), auto);

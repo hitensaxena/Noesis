@@ -50,6 +50,23 @@ pub async fn inject_signal(
             let signal = IngestRequest::new(text, "rest-api");
             state.event_bus.publish(Arc::new(signal));
         }
+        // Allow direct injection of beat signals for testing/triggering cascade completion
+        "kernel.scheduler.beat.slow" => {
+            let beat = crate::kernel::beat_coordinator::BeatPulse::new(crate::signals::types::BEAT_SLOW);
+            state.event_bus.publish(Arc::new(beat));
+        }
+        "kernel.scheduler.beat.medium" => {
+            let beat = crate::kernel::beat_coordinator::BeatPulse::new(crate::signals::types::BEAT_MEDIUM);
+            state.event_bus.publish(Arc::new(beat));
+        }
+        "kernel.scheduler.beat.fast" => {
+            let beat = crate::kernel::beat_coordinator::BeatPulse::new(crate::signals::types::BEAT_FAST);
+            state.event_bus.publish(Arc::new(beat));
+        }
+        "kernel.scheduler.beat.immediate" => {
+            let beat = crate::kernel::beat_coordinator::BeatPulse::new(crate::signals::types::BEAT_IMMEDIATE);
+            state.event_bus.publish(Arc::new(beat));
+        }
         _ => {
             return Json(serde_json::json!({
                 "error": format!("Unknown signal type: {}", body.signal_type),

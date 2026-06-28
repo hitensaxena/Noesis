@@ -293,11 +293,22 @@ async fn rate_limit_middleware(
 /// Simple API key auth middleware.
 /// If NOESIS_API_KEY env var is set, all requests must include
 /// `Authorization: Bearer <key>` or `X-API-Key: <key>` header.
+/// Exempts dashboard and docs pages (no auth needed for the UI).
 /// If unset (default), auth is disabled for localhost development.
 async fn auth_middleware(
     req: axum::http::Request<Body>,
     next: Next,
 ) -> Result<impl IntoResponse, (StatusCode, &'static str)> {
+    // Exempt UI/documentation paths — they are accessed directly in the browser,
+    // so auth headers aren't practical. Other GET endpoints (API, health) require auth.
+    let path = req.uri().path();
+    if path.starts_with("/api/dashboard/")
+        || path.starts_with("/api/docs/")
+        || path == "/api/docs"
+    {
+        return Ok(next.run(req).await);
+    }
+
     let expected_key = match std::env::var("NOESIS_API_KEY") {
         Ok(key) if !key.is_empty() => key,
         _ => return Ok(next.run(req).await), // No key configured — allow all

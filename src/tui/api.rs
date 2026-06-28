@@ -109,13 +109,30 @@ impl NoesisClient {
             .send().await?.json().await?)
     }
 
+    pub async fn reasoning_detail(&self) -> Result<Value> {
+        Ok(self.client.get(format!("{}/api/cognition/meta", self.base_url))
+            .send().await?.json().await?)
+    }
+
+    pub async fn graph_detail(&self) -> Result<Value> {
+        Ok(self.client.get(format!("{}/api/graph", self.base_url))
+            .send().await?.json().await?)
+    }
+
+    pub async fn plugins(&self) -> Result<Value> {
+        Ok(self.client.get(format!("{}/api/plugins", self.base_url))
+            .send().await?.json().await?)
+    }
+
     pub async fn detail_for(&self, name: &str) -> Result<Value> {
         match name {
             "identity" => self.identity_detail().await,
             "memory" => self.memory_detail().await,
             "agency" => self.agency_detail().await,
             "awareness" => self.awareness_detail().await,
+            "reasoning" => self.reasoning_detail().await,
             "simulation" => self.simulation_detail().await,
+            "graph" => self.graph_detail().await,
             "core" => self.core_detail().await,
             _ => Ok(serde_json::json!({"error": format!("unknown detail: {}", name)})),
         }

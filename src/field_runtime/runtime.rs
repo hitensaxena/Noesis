@@ -29,6 +29,8 @@ pub struct CascadeMetrics {
     pub total_signals: usize,
     /// Signals emitted as a result of the cascade.
     pub emitted_signals: Vec<SignalArc>,
+    /// Signal type names of ALL signals processed in this cascade (for metrics tracking).
+    pub signal_types: Vec<String>,
 }
 
 /// Coordinates signal dispatch across fields and their processors.
@@ -102,11 +104,13 @@ impl FieldRuntime {
 
         let mut total_signals = 0;
         let mut all_emitted: Vec<SignalArc> = Vec::new();
+        let mut all_signal_types: Vec<String> = Vec::new();
         let mut queue: VecDeque<SignalArc> = VecDeque::new();
         queue.push_back(root);
 
         while let Some(signal) = queue.pop_front() {
             total_signals += 1;
+            all_signal_types.push(signal.signal_type().to_string());
 
             // Single dispatch through both processor pipeline and field state update
             let emitted = self.dispatch(ctx, signal).await;
@@ -122,6 +126,7 @@ impl FieldRuntime {
         CascadeMetrics {
             total_signals,
             emitted_signals: all_emitted,
+            signal_types: all_signal_types,
         }
     }
 

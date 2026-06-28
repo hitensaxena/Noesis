@@ -11,6 +11,21 @@ use serde::{Deserialize, Serialize};
 use crate::kernel::cloud_event::CloudEvent;
 use crate::kernel::signal::SignalArc;
 
+/// Helper: map a PG row to StoredEvent.
+fn row_to_event(row: tokio_postgres::Row) -> StoredEvent {
+    StoredEvent {
+        seq: row.get::<_, i64>(0) as u64,
+        id: row.get(1),
+        event_type: row.get(2),
+        source: row.get(3),
+        subject: row.get(4),
+        time: row.get::<_, String>(5).parse().unwrap_or_else(|_| Utc::now()),
+        data: serde_json::from_str(&row.get::<_, String>(6)).unwrap_or_default(),
+        actor: row.get(7),
+        scope: serde_json::from_str(&row.get::<_, String>(8)).unwrap_or_default(),
+    }
+}
+
 /// A stored event record.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredEvent {
@@ -285,7 +300,7 @@ mod file_tests {
 
     #[tokio::test]
     async fn test_file_store_append_and_read() {
-        let tmp = std::env::temp_dir().join(format!("noesis_events_test_{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("noesis_event_store_test_{}", std::process::id()));
         let _ = std::fs::remove_file(&tmp);
 
         let store = FileEventStore::new(&tmp).unwrap();
@@ -300,7 +315,7 @@ mod file_tests {
 
     #[tokio::test]
     async fn test_file_store_survives_restart() {
-        let tmp = std::env::temp_dir().join(format!("noesis_events_restart_{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("noesis_event_store_restart_{}", std::process::id()));
         let _ = std::fs::remove_file(&tmp);
 
         // Write some events (scope ensures file handle is closed)
@@ -324,7 +339,7 @@ mod file_tests {
 
     #[tokio::test]
     async fn test_file_store_list_all() {
-        let tmp = std::env::temp_dir().join(format!("noesis_events_list2_{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("noesis_event_store_list2_{}", std::process::id()));
         let _ = std::fs::remove_file(&tmp);
 
         let store = FileEventStore::new(&tmp).unwrap();
@@ -420,6 +435,145 @@ impl EventStore for MemoryEventStore {
         types.sort();
         types.dedup();
         types
+    }
+}
+
+/// Postgres-backed event store using direct tokio-postgres connection.
+///
+/// Stores events in a `noesis_event_store` table with proper indexing.
+/// Survives restarts — all events are durable.
+pub struct PostgresEventStore {
+    client: tokio_postgres::Client,
+    seq: AtomicU64,
+}
+
+impl std::fmt::Debug for PostgresEventStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PostgresEventStore").finish()
+    }
+}
+
+impl PostgresEventStore {
+    /// Connect to Postgres and ensure the noesis_event_store table exists.
+    pub async fn connect(config: &tokio_postgres::Config) -> Result<Self, Box<dyn std::error::Error>> {
+        let (client, conn) = config.connect(tokio_postgres::NoTls).await?;
+        // Spawn connection handler in background
+        tokio::spawn(async move { conn.await.ok(); });
+        client.batch_execute(
+            "CREATE TABLE IF NOT EXISTS noesis_event_store (
+                seq BIGSERIAL PRIMARY KEY,
+                id TEXT NOT NULL UNIQUE,
+                event_type TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT '',
+                subject TEXT NOT NULL DEFAULT '',
+                time TEXT NOT NULL DEFAULT '',
+                data TEXT NOT NULL DEFAULT '{}',
+                actor TEXT NOT NULL DEFAULT '',
+                scope TEXT NOT NULL DEFAULT '{}'
+            );
+            CREATE INDEX IF NOT EXISTS idx_noesis_event_store_type ON noesis_event_store(event_type);
+            CREATE INDEX IF NOT EXISTS idx_noesis_event_store_time ON noesis_event_store(time);"
+        ).await?;
+
+        // Get the current max sequence number
+        let max_seq: i64 = client.query_one("SELECT COALESCE(MAX(seq), 0) FROM noesis_event_store", &[])
+            .await?.get(0);
+
+        tracing::info!("[PostgresEventStore] connected, {} existing events", max_seq);
+        Ok(Self {
+            client,
+            seq: AtomicU64::new(max_seq as u64),
+        })
+    }
+}
+
+#[async_trait]
+impl EventStore for PostgresEventStore {
+    async fn append(&self, event: CloudEvent) -> u64 {
+        let data_s = serde_json::to_string(&event.data).unwrap_or_default();
+        let scope_s = serde_json::to_string(&event.scope).unwrap_or_default();
+        let row = match self.client.query_one(
+            "INSERT INTO noesis_event_store (id, event_type, source, subject, time, data, actor, scope)
+             VALUES ($1::text, $2::text, $3::text, $4::text, $5::text, $6::text, $7::text, $8::text)
+             ON CONFLICT (id) DO NOTHING
+             RETURNING seq",
+            &[&event.id, &event.event_type, &event.source,
+              &event.subject, &event.time, &data_s,
+              &event.actor, &scope_s],
+        ).await {
+            Ok(row) => row.get::<_, i64>(0) as u64,
+            Err(e) => {
+                tracing::warn!("[PostgresEventStore] append error: {}", e);
+                0
+            }
+        };
+        if row > 0 {
+            self.seq.fetch_max(row, std::sync::atomic::Ordering::SeqCst);
+        }
+        row
+    }
+
+    async fn get(&self, seq: u64) -> Option<StoredEvent> {
+        self.client.query_opt(
+            "SELECT seq, id, event_type, source, subject, time, data, actor, scope
+             FROM noesis_event_store WHERE seq = $1",
+            &[&(seq as i64)],
+        ).await.ok()?.map(row_to_event)
+    }
+
+    async fn get_by_id(&self, id: &str) -> Option<StoredEvent> {
+        self.client.query_opt(
+            "SELECT seq, id, event_type, source, subject, time, data, actor, scope
+             FROM noesis_event_store WHERE id = $1",
+            &[&id.to_string()],
+        ).await.ok()?.map(row_to_event)
+    }
+
+    async fn list(&self, from_seq: u64, limit: u64, event_type: Option<&str>) -> Vec<StoredEvent> {
+        let rows = if let Some(et) = event_type {
+            self.client.query(
+                "SELECT seq, id, event_type, source, subject, time, data, actor, scope
+                 FROM noesis_event_store WHERE seq >= $1 AND event_type = $2
+                 ORDER BY seq LIMIT $3",
+                &[&(from_seq as i64), &et.to_string(), &(limit as i64)],
+            ).await.unwrap_or_default()
+        } else {
+            self.client.query(
+                "SELECT seq, id, event_type, source, subject, time, data, actor, scope
+                 FROM noesis_event_store WHERE seq >= $1
+                 ORDER BY seq LIMIT $2",
+                &[&(from_seq as i64), &(limit as i64)],
+            ).await.unwrap_or_default()
+        };
+
+        rows.into_iter().map(row_to_event).collect()
+    }
+
+    async fn list_by_subject(&self, subject: &str, limit: u64) -> Vec<StoredEvent> {
+        let rows = self.client.query(
+            "SELECT seq, id, event_type, source, subject, time, data, actor, scope
+             FROM noesis_event_store WHERE subject = $1
+             ORDER BY seq DESC LIMIT $2",
+            &[&subject.to_string(), &(limit as i64)],
+        ).await.unwrap_or_default();
+
+        rows.into_iter().map(row_to_event).collect()
+    }
+
+    async fn count(&self) -> u64 {
+        self.client.query_one("SELECT COUNT(*) FROM noesis_event_store", &[])
+            .await.map(|r| r.get::<_, i64>(0) as u64).unwrap_or(0)
+    }
+
+    async fn latest_seq(&self) -> u64 {
+        self.seq.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    async fn list_types(&self) -> Vec<String> {
+        let rows = self.client.query(
+            "SELECT DISTINCT event_type FROM noesis_event_store ORDER BY event_type", &[]
+        ).await.unwrap_or_default();
+        rows.into_iter().map(|r| r.get(0)).collect()
     }
 }
 

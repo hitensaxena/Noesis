@@ -9,6 +9,7 @@ use crate::field_runtime::context::FieldContext;
 use crate::signals::types;
 
 pub mod state;
+pub mod domains;
 pub mod processors;
 pub use state::{SimulationFieldState, Scenario};
 
@@ -22,6 +23,11 @@ impl SimulationField {
         Self {
             state: SimulationFieldState {
                 scenarios: Vec::new(),
+                world_models: Vec::new(),
+                assumptions: Vec::new(),
+                counterfactuals: Vec::new(),
+                forecasts: Vec::new(),
+                risk_assessments: Vec::new(),
             },
         }
     }
@@ -48,7 +54,8 @@ impl Field for SimulationField {
     }
 
     async fn shutdown(&mut self) -> Result<()> {
-        tracing::info!("[SimulationField] shutting down with {} scenarios", self.state.scenarios.len());
+        tracing::info!("[SimulationField] shutting down with {} scenarios, {} world_models, {} assumptions",
+            self.state.scenarios.len(), self.state.world_models.len(), self.state.assumptions.len());
         Ok(())
     }
 }

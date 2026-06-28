@@ -40,7 +40,9 @@ fn detail_for<'a>(app: &'a TuiApp, name: &str) -> &'a Value {
         "Memory" => &app.memory_detail,
         "Agency" => &app.agency_detail,
         "Awareness" => &app.awareness_detail,
+        "Reasoning" => &app.reasoning_detail,
         "Simulation" => &app.simulation_detail,
+        "Knowledge Graph" => &app.graph_detail,
         "Core" => &app.core_detail,
         _ => &app.core_detail,
     }
@@ -72,8 +74,10 @@ fn render_header(f: &mut Frame, app: &TuiApp, area: Rect) {
         "Memory"   => "Episodic, semantic, procedural, graph, and working memory",
         "Agency" => "Goals, strategy, priorities, and what to pursue",
         "Awareness" => "Attention, observer, analytics, health, and curiosity",
+        "Reasoning" => "Metacognition, decisions, hypotheses, analogies, synthesis, concepts",
         "Simulation" => "Scenarios, world-models, forecasting, risk, and counterfactuals",
-        "Core"     => "Event bus, registry, scheduler, metrics, and permissions",
+        "Knowledge Graph" => "Entities, relations, and knowledge structure",
+        "Core"     => "Event bus, registry, config, and runtime info",
         _ => "",
     };
 
@@ -107,7 +111,9 @@ fn render_content(f: &mut Frame, detail_name: &str, data: &Value, area: Rect) {
         "Memory" => render_memory_content(data, &mut lines),
         "Agency" => render_agency_content(data, &mut lines),
         "Awareness" => render_awareness_content(data, &mut lines),
+        "Reasoning" => render_reasoning_content(data, &mut lines),
         "Simulation" => render_simulation_content(data, &mut lines),
+        "Knowledge Graph" => render_graph_content(data, &mut lines),
         "Core" => render_core_content(data, &mut lines),
         _ => lines.push(Line::from(Span::styled("Unknown detail view", colors::DIM))),
     }
@@ -209,9 +215,11 @@ fn render_memory_content(data: &Value, lines: &mut Vec<Line>) {
 }
 
 fn render_agency_content(data: &Value, lines: &mut Vec<Line>) {
-    let goals_total = data.pointer("/goals/total").and_then(|c| c.as_u64()).unwrap_or(0);
-    let goals_active = data.pointer("/goals/active").and_then(|c| c.as_u64()).unwrap_or(0);
-    let goals_completed = data.pointer("/goals/completed").and_then(|c| c.as_u64()).unwrap_or(0);
+    let goals = data.get("goals").and_then(|v| v.as_object()).cloned().unwrap_or_default();
+    let goals_items = goals.get("items").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+    let goals_active = goals.get("active").and_then(|c| c.as_u64()).unwrap_or(0);
+    let goals_completed = goals.get("completed").and_then(|c| c.as_u64()).unwrap_or(0);
+    let goals_abandoned = goals.get("abandoned").and_then(|c| c.as_u64()).unwrap_or(0);
     let projects = data.pointer("/projects/count").and_then(|c| c.as_u64()).unwrap_or(0);
     let tasks = data.pointer("/tasks/count").and_then(|c| c.as_u64()).unwrap_or(0);
     let plans = data.pointer("/plans/count").and_then(|c| c.as_u64()).unwrap_or(0);
@@ -219,9 +227,10 @@ fn render_agency_content(data: &Value, lines: &mut Vec<Line>) {
     let pursuits = data.pointer("/active_pursuits/count").and_then(|c| c.as_u64()).unwrap_or(0);
 
     lines.push(Line::from(Span::raw("")));
-    render_section(lines, "Goals", goals_total as usize, goals_total > 0);
+    render_section(lines, "Goals", goals_items, goals_items > 0);
     render_key_value(lines, "  Active", &Value::Number(goals_active.into()));
     render_key_value(lines, "  Completed", &Value::Number(goals_completed.into()));
+    render_key_value(lines, "  Abandoned", &Value::Number(goals_abandoned.into()));
     render_section(lines, "Projects", projects as usize, projects > 0);
     render_section(lines, "Tasks", tasks as usize, tasks > 0);
     render_section(lines, "Plans", plans as usize, plans > 0);
@@ -265,33 +274,66 @@ fn render_simulation_content(data: &Value, lines: &mut Vec<Line>) {
     render_section(lines, "Counterfactuals", counterfactuals as usize, counterfactuals > 0);
 }
 
-fn render_core_content(data: &Value, lines: &mut Vec<Line>) {
-    let bus_subs = data.pointer("/event_bus/subscribers").and_then(|c| c.as_u64()).unwrap_or(0);
-    let bus_sigs = data.pointer("/event_bus/signal_count").and_then(|c| c.as_u64()).unwrap_or(0);
-    let scheduler_status = data.pointer("/scheduler/status").and_then(|s| s.as_str()).unwrap_or("—");
-    let reg_fields = data.pointer("/registry/fields").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
-    let reg_procs = data.pointer("/registry/processors").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
-    let reg_signals = data.pointer("/registry/signal_types").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
-    let plugins = data.pointer("/plugin_loader/status").and_then(|s| s.as_str()).unwrap_or("—");
-    let kernel_status = data.pointer("/kernel/status").and_then(|s| s.as_str()).unwrap_or("—");
-    let uptime = data.pointer("/kernel/uptime_secs").and_then(|u| u.as_u64()).unwrap_or(0);
-    let runtime_tasks = data.pointer("/runtime/tasks_count").and_then(|c| c.as_u64()).unwrap_or(0);
-    let metrics_total = data.pointer("/metrics/signals_processed").and_then(|c| c.as_u64()).unwrap_or(0);
-    let permissions = data.pointer("/permissions/mode").and_then(|s| s.as_str()).unwrap_or("—");
+fn render_reasoning_content(data: &Value, lines: &mut Vec<Line>) {
+    let insights = data.get("insights").and_then(|v| v.as_array().map(|a| a.len())).unwrap_or(0);
+    let decisions = data.get("decisions").and_then(|v| v.as_array().map(|a| a.len())).unwrap_or(0);
+    let hypotheses = data.get("hypotheses").and_then(|v| v.as_array().map(|a| a.len())).unwrap_or(0);
+    let analogies = data.get("analogies").and_then(|v| v.as_array().map(|a| a.len())).unwrap_or(0);
+    let concepts = data.get("concepts").and_then(|v| v.as_array().map(|a| a.len())).unwrap_or(0);
+    let models = data.get("models").or(data.get("mental_models")).and_then(|v| v.as_array().map(|a| a.len())).unwrap_or(0);
+    let conclusions = data.get("conclusions").and_then(|v| v.as_array().map(|a| a.len())).unwrap_or(0);
 
     lines.push(Line::from(Span::raw("")));
-    render_key_value(lines, "Event Bus Subscribers", &Value::Number(bus_subs.into()));
-    render_key_value(lines, "Event Bus Signal Count", &Value::Number(bus_sigs.into()));
-    render_key_value(lines, "Scheduler", &Value::String(scheduler_status.to_string()));
+    render_section(lines, "Insights", insights, insights > 0);
+    render_section(lines, "Decisions", decisions, decisions > 0);
+    render_section(lines, "Hypotheses", hypotheses, hypotheses > 0);
+    render_section(lines, "Analogies", analogies, analogies > 0);
+    render_section(lines, "Concepts", concepts, concepts > 0);
+    render_section(lines, "Mental Models", models, models > 0);
+    render_section(lines, "Conclusions", conclusions, conclusions > 0);
+}
+
+fn render_graph_content(data: &Value, lines: &mut Vec<Line>) {
+    let base = data.get("graph").or(Some(data)).and_then(|g| g.as_object()).cloned().unwrap_or_default();
+    let entities = base.get("entity_count").and_then(|c| c.as_u64())
+        .or_else(|| base.get("entities").and_then(|v| v.as_array().map(|a| a.len() as u64)))
+        .unwrap_or(0);
+    let relations = base.get("relation_count").and_then(|c| c.as_u64())
+        .or_else(|| base.get("links").and_then(|v| v.as_array().map(|a| a.len() as u64)))
+        .unwrap_or(0);
+    let nodes = base.get("nodes").and_then(|v| v.as_array().map(|a| a.len() as u64)).unwrap_or(0);
+    let edges = base.get("edges").or(base.get("links")).and_then(|v| v.as_array().map(|a| a.len() as u64)).unwrap_or(0);
+
     lines.push(Line::from(Span::raw("")));
-    render_key_value(lines, "Fields", &Value::Number(reg_fields.into()));
-    render_key_value(lines, "Processors", &Value::Number(reg_procs.into()));
-    render_key_value(lines, "Signal Types", &Value::Number(reg_signals.into()));
+    render_key_value(lines, "Total entities", &Value::Number((entities + nodes).into()));
+    render_key_value(lines, "Total relations", &Value::Number((relations + edges).into()));
+    render_key_value(lines, "Node count", &Value::Number(nodes.into()));
+    render_key_value(lines, "Edge count", &Value::Number(edges.into()));
+}
+
+fn render_core_content(data: &Value, lines: &mut Vec<Line>) {
+    let config = data.get("config").and_then(|v| v.as_object()).cloned().unwrap_or_default();
+    let rest_enabled = config.get("rest_api_enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+    let default_port = config.get("default_port").and_then(|v| v.as_u64()).unwrap_or(0);
+    let cache_interval = config.get("field_cache_interval_secs").and_then(|v| v.as_u64()).unwrap_or(0);
+    let features = config.get("features").and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(", "))
+        .unwrap_or_default();
+
+    let bus_channels = data.pointer("/event_bus/channels").and_then(|v| v.as_array().map(|a| a.len())).unwrap_or(0);
+    let meta = data.get("_meta").and_then(|v| v.as_object()).cloned().unwrap_or_default();
+    let signals = meta.get("signals_processed").and_then(|c| c.as_u64()).unwrap_or(0);
+    let arch = meta.get("arch").and_then(|s| s.as_str()).unwrap_or("—");
+    let version = meta.get("version").and_then(|s| s.as_str()).unwrap_or("—");
+
     lines.push(Line::from(Span::raw("")));
-    render_key_value(lines, "Plugin Loader", &Value::String(plugins.to_string()));
-    render_key_value(lines, "Kernel", &Value::String(kernel_status.to_string()));
-    render_key_value(lines, "Uptime (s)", &Value::Number(uptime.into()));
-    render_key_value(lines, "Runtime Tasks", &Value::Number(runtime_tasks.into()));
-    render_key_value(lines, "Metrics Total", &Value::Number(metrics_total.into()));
-    render_key_value(lines, "Permissions", &Value::String(permissions.to_string()));
+    render_key_value(lines, "Version", &Value::String(version.to_string()));
+    render_key_value(lines, "Architecture", &Value::String(arch.to_string()));
+    render_key_value(lines, "Signal Total", &Value::Number(signals.into()));
+    render_key_value(lines, "Bus Channels", &Value::Number(bus_channels.into()));
+    lines.push(Line::from(Span::raw("")));
+    render_key_value(lines, "REST API", &Value::String(if rest_enabled { "Enabled" } else { "Disabled" }.to_string()));
+    render_key_value(lines, "Port", &Value::Number(default_port.into()));
+    render_key_value(lines, "Cache Interval", &Value::Number(cache_interval.into()));
+    render_key_value(lines, "Features", &Value::String(features));
 }

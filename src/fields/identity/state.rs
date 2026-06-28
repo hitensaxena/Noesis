@@ -1,24 +1,16 @@
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
-/// A single belief held by the system.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Belief {
-    pub id: Uuid,
-    pub belief: String,
-    pub confidence: f32,
-    pub created_at: DateTime<Utc>,
-    pub is_active: bool,
-}
-
-/// A detected personality trait.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Trait {
-    pub id: Uuid,
-    pub name: String,
-    pub strength: f32,
-}
+// Re-export domain types for cohesive state access
+pub use super::domains::beliefs::Belief;
+pub use super::domains::traits::Trait;
+pub use super::domains::values::Value;
+pub use super::domains::roles::Role;
+pub use super::domains::principles::Principle;
+pub use super::domains::self_model::SelfModel;
+pub use super::domains::personality::PersonalityProfile;
+pub use super::domains::timeline::TimelineEntry;
+pub use super::domains::evolution::IdentityProjection;
+pub use super::domains::narrative_self::NarrativeSelf;
 
 /// State of the Identity Field.
 #[derive(Debug, Clone, Serialize, Deserialize)]
