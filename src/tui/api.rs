@@ -1,140 +1,275 @@
-//! HTTP client for the Noesis REST API.
-//!
-//! Used by the TUI to fetch state from the running daemon.
+//! Blocking HTTP client + typed models for the Noesis REST API.
+//! Used by the background worker thread to fetch state from the daemon.
 
-use anyhow::Result;
-use serde_json::Value;
+use anyhow::{Context, Result};
+use serde::Deserialize;
 use std::time::Duration;
 
-pub struct NoesisClient {
-    base_url: String,
-    client: reqwest::Client,
+pub struct Client {
+    base: String,
+    http: reqwest::blocking::Client,
 }
 
-impl NoesisClient {
-    pub fn new(base_url: &str) -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(5))
+impl Client {
+    pub fn new(base: impl Into<String>) -> Self {
+        let http = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(10))
             .build()
-            .unwrap();
-        Self {
-            base_url: base_url.trim_end_matches('/').to_string(),
-            client,
+            .expect("build http client");
+        Self { base: base.into(), http }
+    }
+
+    fn get<T: for<'de> Deserialize<'de>>(&self, path: &str) -> Result<T> {
+        let url = format!("{}{}", self.base, path);
+        let resp = self.http.get(&url).send().with_context(|| format!("GET {url}"))?;
+        let status = resp.status();
+        let body = resp.text().unwrap_or_default();
+        if !status.is_success() {
+            anyhow::bail!("GET {url} -> {status}: {}", truncate(&body, 200));
         }
+        serde_json::from_str(&body).with_context(|| format!("decode GET {url}"))
     }
 
-    pub async fn health(&self) -> Result<Value> {
-        Ok(self.client.get(format!("{}/api/health", self.base_url))
-            .send().await?.json().await?)
+    fn post<T: for<'de> Deserialize<'de>>(&self, path: &str, body: serde_json::Value) -> Result<T> {
+        let url = format!("{}{}", self.base, path);
+        let resp = self.http.post(&url).json(&body).send().with_context(|| format!("POST {url}"))?;
+        let status = resp.status();
+        let text = resp.text().unwrap_or_default();
+        if !status.is_success() {
+            anyhow::bail!("POST {url} -> {status}: {}", truncate(&text, 200));
+        }
+        serde_json::from_str(&text).with_context(|| format!("decode POST {url}"))
     }
 
-    pub async fn stats(&self) -> Result<Value> {
-        Ok(self.client.get(format!("{}/api/stats", self.base_url))
-            .send().await?.json().await?)
+    // ---- reads -----------------------------------------------------------
+
+    pub fn health(&self) -> Result<Health> {
+        self.get("/api/health")
     }
 
-    pub async fn signal_stats(&self) -> Result<Value> {
-        Ok(self.client.get(format!("{}/api/stats/signals", self.base_url))
-            .send().await?.json().await?)
+    pub fn stats(&self) -> Result<Stats> {
+        self.get("/api/stats")
     }
 
-    pub async fn signal_types(&self) -> Result<Value> {
-        Ok(self.client.get(format!("{}/api/signals", self.base_url))
-            .send().await?.json().await?)
+    pub fn signal_types(&self) -> Result<Vec<SignalTypeItem>> {
+        self.get("/api/signals")
     }
 
-    pub async fn observability(&self) -> Result<Value> {
-        Ok(self.client.get(format!("{}/api/observability/overview", self.base_url))
-            .send().await?.json().await?)
+    pub fn signal_history(&self, limit: usize, field: Option<&str>) -> Result<Vec<SignalHistoryEntry>> {
+        let mut path = format!("/api/signals/history?limit={limit}");
+        if let Some(f) = field {
+            path.push_str(&format!("&field={f}"));
+        }
+        self.get(&path)
     }
 
-    pub async fn processor_metrics(&self) -> Result<Value> {
-        Ok(self.client.get(format!("{}/api/observability/processors", self.base_url))
-            .send().await?.json().await?)
+    pub fn observability(&self) -> Result<Observability> {
+        self.get("/api/observability/overview")
     }
 
-    pub async fn signal_metrics(&self) -> Result<Value> {
-        Ok(self.client.get(format!("{}/api/observability/signals", self.base_url))
-            .send().await?.json().await?)
+    pub fn processor_metrics(&self) -> Result<Vec<ProcessorMetric>> {
+        self.get("/api/observability/processors")
     }
 
-    pub async fn ingest(&self, text: &str, source: &str) -> Result<Value> {
-        let client = self.client.clone();
-        let body = serde_json::json!({"text": text, "source": source});
-        Ok(client.post(format!("{}/api/ingest", self.base_url))
-            .json(&body)
-            .send().await?
-            .json().await?)
+    pub fn signal_metrics(&self) -> Result<SignalMetricsData> {
+        self.get("/api/observability/signals")
     }
 
-    /// Fetch all dashboard data in one call.
-    pub async fn dashboard(&self) -> Result<(Value, Value, Value)> {
-        let stats = self.stats().await?;
-        let signals = self.signal_stats().await?;
-        let obs = self.observability().await?;
-        Ok((stats, signals, obs))
+    pub fn cascade_trace(&self) -> Result<CascadeTraceData> {
+        self.get("/api/observability/cascade")
     }
 
-    // ---------------------------------------------------------------------------
-    // Deep observability detail endpoints
-    // ---------------------------------------------------------------------------
-
-    pub async fn identity_detail(&self) -> Result<Value> {
-        Ok(self.client.get(format!("{}/api/identity/detail", self.base_url))
-            .send().await?.json().await?)
+    pub fn capabilities(&self) -> Result<Vec<Capability>> {
+        self.get("/api/capabilities")
     }
 
-    pub async fn memory_detail(&self) -> Result<Value> {
-        Ok(self.client.get(format!("{}/api/memory/detail", self.base_url))
-            .send().await?.json().await?)
+    pub fn plugins(&self) -> Result<Vec<PluginSummary>> {
+        self.get("/api/plugins")
     }
 
-    pub async fn agency_detail(&self) -> Result<Value> {
-        Ok(self.client.get(format!("{}/api/agency/detail", self.base_url))
-            .send().await?.json().await?)
+    pub fn config(&self) -> Result<SystemConfig> {
+        self.get("/api/config")
     }
 
-    pub async fn awareness_detail(&self) -> Result<Value> {
-        Ok(self.client.get(format!("{}/api/awareness/detail", self.base_url))
-            .send().await?.json().await?)
-    }
-
-    pub async fn simulation_detail(&self) -> Result<Value> {
-        Ok(self.client.get(format!("{}/api/simulation/detail", self.base_url))
-            .send().await?.json().await?)
-    }
-
-    pub async fn core_detail(&self) -> Result<Value> {
-        Ok(self.client.get(format!("{}/api/core/detail", self.base_url))
-            .send().await?.json().await?)
-    }
-
-    pub async fn reasoning_detail(&self) -> Result<Value> {
-        Ok(self.client.get(format!("{}/api/cognition/meta", self.base_url))
-            .send().await?.json().await?)
-    }
-
-    pub async fn graph_detail(&self) -> Result<Value> {
-        Ok(self.client.get(format!("{}/api/graph", self.base_url))
-            .send().await?.json().await?)
-    }
-
-    pub async fn plugins(&self) -> Result<Value> {
-        Ok(self.client.get(format!("{}/api/plugins", self.base_url))
-            .send().await?.json().await?)
-    }
-
-    pub async fn detail_for(&self, name: &str) -> Result<Value> {
+    pub fn detail_for(&self, name: &str) -> Result<serde_json::Value> {
         match name {
-            "identity" => self.identity_detail().await,
-            "memory" => self.memory_detail().await,
-            "agency" => self.agency_detail().await,
-            "awareness" => self.awareness_detail().await,
-            "reasoning" => self.reasoning_detail().await,
-            "simulation" => self.simulation_detail().await,
-            "graph" => self.graph_detail().await,
-            "core" => self.core_detail().await,
-            _ => Ok(serde_json::json!({"error": format!("unknown detail: {}", name)})),
+            "identity" => self.get("/api/identity/detail"),
+            "memory" => self.get("/api/memory/detail"),
+            "agency" => self.get("/api/agency/detail"),
+            "awareness" => self.get("/api/awareness/detail"),
+            "reasoning" => self.get("/api/reasoning/detail"),
+            "simulation" => self.get("/api/simulation/detail"),
+            "graph" => self.get("/api/graph"),
+            "core" => self.get("/api/core/detail"),
+            _ => anyhow::bail!("unknown detail: {name}"),
         }
     }
+
+    // ---- writes ----------------------------------------------------------
+
+    pub fn ingest(&self, text: &str) -> Result<()> {
+        let _: serde_json::Value = self.post("/api/ingest", serde_json::json!({ "text": text }))?;
+        Ok(())
+    }
+
+    pub fn inject_signal(&self, signal_type: &str, payload: serde_json::Value) -> Result<()> {
+        let _: serde_json::Value = self.post("/api/signals/inject", serde_json::json!({
+            "signal_type": signal_type, "payload": payload,
+        }))?;
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Models — deserialised from the Noesis API
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct Health {
+    pub status: String,
+    #[serde(default)]
+    pub uptime_seconds: f64,
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub postgres: Option<String>,
+    #[serde(default)]
+    pub redis: Option<String>,
+}
+
+#[derive(Deserialize, Default, Clone)]
+pub struct Stats {
+    #[serde(default)]
+    pub fields: Vec<String>,
+    #[serde(default)]
+    pub processors: Vec<String>,
+    #[serde(default)]
+    pub signal_types: Vec<(String, SignalTypeItem)>,
+    #[serde(default)]
+    pub field_count: usize,
+    #[serde(default)]
+    pub processor_count: usize,
+    #[serde(default)]
+    pub signal_type_count: usize,
+    #[serde(default)]
+    pub signals_total: usize,
+    #[serde(default)]
+    pub cascade_cycles: usize,
+}
+
+#[derive(Deserialize, Clone)]
+pub struct SignalTypeItem {
+    #[serde(default)]
+    pub signal_type: String,
+    #[serde(default)]
+    pub description: String,
+}
+
+#[derive(Deserialize, Clone)]
+pub struct SignalHistoryEntry {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub signal_type: String,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub timestamp: Option<String>,
+    #[serde(default)]
+    pub data: serde_json::Value,
+}
+
+#[derive(Deserialize)]
+pub struct Observability {
+    #[serde(default)]
+    pub signal_types: Vec<(String, String)>,
+    #[serde(default)]
+    pub signals_processed: serde_json::Value,
+    #[serde(default)]
+    pub signals_total: Option<usize>,
+    #[serde(default)]
+    pub fields: Option<usize>,
+    #[serde(default)]
+    pub processors: Option<usize>,
+    #[serde(default)]
+    pub uptime_seconds: f64,
+    #[serde(default)]
+    pub cascade_cycles: Option<usize>,
+    #[serde(default)]
+    pub signal_rates: std::collections::BTreeMap<String, f64>,
+}
+
+#[derive(Deserialize, Clone)]
+pub struct ProcessorMetric {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub count: u64,
+    #[serde(default)]
+    pub avg_latency_ms: u64,
+}
+
+#[derive(Deserialize)]
+pub struct SignalMetricsData {
+    #[serde(default)]
+    pub signals: std::collections::BTreeMap<String, u64>,
+    #[serde(default)]
+    pub total: u64,
+}
+
+#[derive(Deserialize)]
+pub struct CascadeTraceData {
+    #[serde(default)]
+    pub depth: u32,
+    #[serde(default)]
+    pub signals: Vec<String>,
+    #[serde(default)]
+    pub duration_ms: f64,
+}
+
+#[derive(Deserialize, Clone)]
+pub struct Capability {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub confidence: f32,
+}
+
+#[derive(Deserialize, Clone)]
+pub struct PluginSummary {
+    pub name: String,
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub processors: Vec<String>,
+}
+
+#[derive(Deserialize)]
+pub struct SystemConfig {
+    #[serde(default)]
+    pub rest_api_enabled: bool,
+    #[serde(default)]
+    pub port: u16,
+    #[serde(default)]
+    pub storage_backend: String,
+    #[serde(default)]
+    pub settings: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+/// Aggregate fetched on dashboard load.
+pub struct DashboardData {
+    pub stats: Stats,
+    pub health: Health,
+    pub observability: Observability,
+}
+
+fn truncate(s: &str, n: usize) -> String {
+    if s.len() <= n { s.to_string() } else { format!("{}…", &s[..n]) }
 }

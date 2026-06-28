@@ -1,247 +1,432 @@
-//! TUI application state — holds all data fetched from the Noesis API.
+//! Application state, navigation, and key handling. Rendering lives in `ui.rs`.
+//!
+//! Architecture mirrors curlyos-tui: a background worker thread owns the blocking
+//! HTTP client and communicates via channels. The UI thread never blocks on I/O.
 
-use std::time::{Duration, Instant};
-use anyhow::Result;
-use serde_json::Value;
+use crate::tui::api::*;
+use crate::tui::worker::{Req, Resp};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::widgets::ListState;
+use std::sync::mpsc::Sender;
 
-use super::api::NoesisClient;
-
-/// Available screens in the TUI.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Screen {
-    Dashboard,
-    Signals,
-    Fields,
-    Processors,
-    Observability,
-    Log,
-    Detail,  // Deep field observability (uses detail_index to select which field)
-    Settings, // Settings and configuration
-}
-
-/// Names of the deep detail views available in the Detail screen.
-pub const DETAIL_NAMES: &[&str] = &[
-    "Identity",
-    "Memory",
-    "Agency",
-    "Awareness",
-    "Reasoning",
-    "Simulation",
-    "Knowledge Graph",
-    "Core",
+pub const TABS: [&str; 5] = ["Dashboard", "Fields", "Signals", "Observability", "System"];
+pub const FIELD_SUBS: [&str; 9] = [
+    "Overview", "Identity", "Memory", "Agency", "Awareness",
+    "Reasoning", "Simulation", "Graph", "Core",
 ];
+pub const SIGNAL_SUBS: [&str; 3] = ["Types", "History", "Inject"];
+pub const OBSERV_SUBS: [&str; 4] = ["Overview", "Processors", "Metrics", "Cascade"];
+pub const SYSTEM_SUBS: [&str; 3] = ["Config", "Plugins", "Log"];
 
-impl Screen {
-    pub fn all() -> &'static [Screen] {
-        &[
-            Screen::Dashboard,
-            Screen::Signals,
-            Screen::Fields,
-            Screen::Processors,
-            Screen::Observability,
-            Screen::Log,
-            Screen::Detail,
-            Screen::Settings,
-        ]
-    }
+#[derive(Clone, Copy, PartialEq)]
+pub enum Tab {
+    Dashboard,
+    Fields,
+    Signals,
+    Observability,
+    System,
+}
 
-    pub fn name(&self) -> &'static str {
+const TAB_ORDER: [Tab; 5] = [Tab::Dashboard, Tab::Fields, Tab::Signals, Tab::Observability, Tab::System];
+
+impl Tab {
+    pub fn index(self) -> usize { TAB_ORDER.iter().position(|&t| t == self).unwrap_or(0) }
+    fn from_index(i: usize) -> Tab { TAB_ORDER[i.min(TAB_ORDER.len() - 1)] }
+    fn is_live(self) -> bool { matches!(self, Tab::Dashboard | Tab::Observability) }
+    pub fn sub_labels(self) -> &'static [&'static str] {
         match self {
-            Screen::Dashboard => "Dashboard",
-            Screen::Signals => "Signals",
-            Screen::Fields => "Fields",
-            Screen::Processors => "Processors",
-            Screen::Observability => "Observability",
-            Screen::Log => "Log",
-            Screen::Detail => "Detail",
-            Screen::Settings => "Settings",
-        }
-    }
-
-    pub fn icon(&self) -> &'static str {
-        match self {
-            Screen::Dashboard => "\u{2699}",    // gear
-            Screen::Signals => "\u{26A1}",       // lightning
-            Screen::Fields => "\u{1F4CA}",       // chart
-            Screen::Processors => "\u{1F9E0}",   // brain
-            Screen::Observability => "\u{1F4F0}", // newspaper
-            Screen::Log => "\u{1F4DD}",          // memo
-            Screen::Detail => "\u{1F50D}",       // magnifying glass
-            Screen::Settings => "\u{2699}",      // gear
+            Tab::Fields => &FIELD_SUBS,
+            Tab::Signals => &SIGNAL_SUBS,
+            Tab::Observability => &OBSERV_SUBS,
+            Tab::System => &SYSTEM_SUBS,
+            _ => &[],
         }
     }
 }
 
-/// TUI application state.
-pub struct TuiApp {
-    pub api: NoesisClient,
-    pub screen: Screen,
+// ── Selection helper ──────────────────────────────────────────────────────────
+
+#[derive(Default)]
+pub struct Sel {
+    pub state: ListState,
+    pub len: usize,
+}
+
+impl Sel {
+    pub fn set_len(&mut self, len: usize) {
+        self.len = len;
+        self.state.select(if len == 0 { None } else { Some(self.state.selected().unwrap_or(0).min(len - 1)) });
+    }
+    pub fn selected(&self) -> Option<usize> { self.state.selected() }
+    pub fn next(&mut self) {
+        if self.len == 0 { return; }
+        let i = self.state.selected().map_or(0, |i| (i + 1).min(self.len - 1));
+        self.state.select(Some(i));
+    }
+    pub fn prev(&mut self) {
+        if self.len == 0 { return; }
+        let i = self.state.selected().map_or(0, |i| i.saturating_sub(1));
+        self.state.select(Some(i));
+    }
+}
+
+// ── Overlay system ───────────────────────────────────────────────────────────
+
+pub enum Overlay {
+    None,
+    Help,
+    Form(Form),
+}
+
+pub struct Form {
+    pub kind: FormKind,
+    pub title: String,
+    pub fields: Vec<FormField>,
+    pub active: usize,
+}
+
+pub enum FormKind {
+    Ingest,
+    Inject,
+}
+
+pub struct FormField {
+    pub label: String,
+    pub value: String,
+}
+
+// ── Main App struct ──────────────────────────────────────────────────────────
+
+pub struct App {
+    pub tx: Sender<Req>,
+    pub tab: Tab,
+    pub sub_idx: usize,
+    pub overlay: Overlay,
+    pub inflight: usize,
+    pub status: Option<(String, bool)>, // (message, is_error)
     pub should_quit: bool,
+    pub base: String,
+    pub frame: u64,
 
-    // Data refreshed from API
-    pub stats: Value,
-    pub signals: Value,
-    pub obs: Value,
-    pub signal_types: Value,
-    pub processor_metrics: Value,
+    // Dashboard
+    pub health: Option<Health>,
+    pub stats: Stats,
+    pub observability: Option<Observability>,
 
-    // Deep detail data (fetched once to avoid N+1 queries per refresh)
-    pub identity_detail: Value,
-    pub memory_detail: Value,
-    pub agency_detail: Value,
-    pub awareness_detail: Value,
-    pub reasoning_detail: Value,
-    pub simulation_detail: Value,
-    pub graph_detail: Value,
-    pub core_detail: Value,
+    // Fields — detail JSON for each field
+    pub field_details: std::collections::HashMap<String, serde_json::Value>,
 
-    // Plugin data
-    pub plugins: Value,
+    // Signals
+    pub signal_types: Vec<SignalTypeItem>,
+    pub signal_history: Vec<SignalHistoryEntry>,
+    pub history_sel: Sel,
 
-    // Detail navigation
-    pub detail_index: usize,
+    // Observability
+    pub processor_metrics: Vec<ProcessorMetric>,
+    pub signal_metrics: Option<SignalMetricsData>,
+    pub cascade_trace: Option<CascadeTraceData>,
+    pub capabilities: Vec<Capability>,
 
-    // Settings
-    pub auto_refresh: bool,
-    pub api_url: String,
-
-    // Refresh tracking
-    pub last_refresh: Instant,
-    pub refresh_interval: Duration,
-    pub status_message: String,
+    // System
+    pub plugins: Vec<PluginSummary>,
+    pub config: Option<SystemConfig>,
 
     // Log entries (local)
     pub log_entries: Vec<String>,
+
+    // Inject form state
+    pub inject_signal_type: String,
 }
 
-impl TuiApp {
-    pub async fn new(api_url: &str) -> Result<Self> {
-        let api = NoesisClient::new(api_url);
-
-        // Initial data fetch
-        let (stats, signals, obs) = api.dashboard().await?;
-        let signal_types = api.signal_types().await?;
-        let processor_metrics = api.processor_metrics().await?;
-
-        let mut app = Self {
-            api,
-            screen: Screen::Dashboard,
+impl App {
+    pub fn new(tx: Sender<Req>, base: String) -> Self {
+        App {
+            tx,
+            tab: Tab::Dashboard,
+            sub_idx: 0,
+            overlay: Overlay::None,
+            inflight: 0,
+            status: None,
             should_quit: false,
-            stats,
-            signals,
-            obs,
-            signal_types,
-            processor_metrics,
-            identity_detail: serde_json::json!({}),
-            memory_detail: serde_json::json!({}),
-            agency_detail: serde_json::json!({}),
-            awareness_detail: serde_json::json!({}),
-            reasoning_detail: serde_json::json!({}),
-            simulation_detail: serde_json::json!({}),
-            graph_detail: serde_json::json!({}),
-            core_detail: serde_json::json!({}),
-            plugins: serde_json::json!({}),
-            detail_index: 0,
-            auto_refresh: true,
-            api_url: api_url.to_string(),
-            last_refresh: Instant::now(),
-            refresh_interval: Duration::from_secs(2),
-            status_message: "Connected".to_string(),
-            log_entries: Vec::new(),
-        };
-
-        app.add_log("Connected to Noesis API");
-        Ok(app)
+            base,
+            frame: 0,
+            health: None,
+            stats: Stats::default(),
+            observability: None,
+            field_details: std::collections::HashMap::new(),
+            signal_types: vec![],
+            signal_history: vec![],
+            history_sel: Sel::default(),
+            processor_metrics: vec![],
+            signal_metrics: None,
+            cascade_trace: None,
+            capabilities: vec![],
+            plugins: vec![],
+            config: None,
+            log_entries: vec![],
+            inject_signal_type: String::new(),
+        }
     }
 
-    /// Refresh all data from the API.
-    pub async fn refresh(&mut self) {
-        match self.api.dashboard().await {
-            Ok((stats, signals, obs)) => {
-                self.stats = stats;
-                self.signals = signals;
-                self.obs = obs;
-            }
-            Err(e) => {
-                self.status_message = format!("API error: {}", e);
-                return;
-            }
-        }
-
-        if let Ok(st) = self.api.signal_types().await {
-            self.signal_types = st;
-        }
-        if let Ok(pm) = self.api.processor_metrics().await {
-            self.processor_metrics = pm;
-        }
-
-        // Fetch deep detail data
-        if let Ok(d) = self.api.identity_detail().await { self.identity_detail = d; }
-        if let Ok(d) = self.api.memory_detail().await { self.memory_detail = d; }
-        if let Ok(d) = self.api.agency_detail().await { self.agency_detail = d; }
-        if let Ok(d) = self.api.awareness_detail().await { self.awareness_detail = d; }
-        if let Ok(d) = self.api.reasoning_detail().await { self.reasoning_detail = d; }
-        if let Ok(d) = self.api.simulation_detail().await { self.simulation_detail = d; }
-        if let Ok(d) = self.api.graph_detail().await { self.graph_detail = d; }
-        if let Ok(d) = self.api.core_detail().await { self.core_detail = d; }
-        if let Ok(d) = self.api.plugins().await { self.plugins = d; }
-
-        let auto = if self.auto_refresh { "" } else { " (paused)" };
-        self.status_message = format!("OK ({}s){}", self.refresh_interval.as_secs(), auto);
-        self.last_refresh = Instant::now();
+    fn send(&mut self, req: Req) {
+        self.inflight += 1;
+        let _ = self.tx.send(req);
     }
 
-    pub fn add_log(&mut self, msg: impl Into<String>) {
+    pub fn loading(&self) -> bool { self.inflight > 0 }
+
+    fn add_log(&mut self, msg: impl Into<String>) {
         let entry = format!("[{}] {}", chrono::Utc::now().format("%H:%M:%S"), msg.into());
         self.log_entries.push(entry);
-        if self.log_entries.len() > 100 {
-            self.log_entries.remove(0);
+        if self.log_entries.len() > 200 { self.log_entries.remove(0); }
+    }
+
+    /// Auto-refresh live views on timer. Called by event loop.
+    pub fn auto_refresh(&mut self) {
+        if !(self.tab.is_live() && self.inflight == 0 && matches!(self.overlay, Overlay::None)) {
+            return;
+        }
+        match self.tab {
+            Tab::Dashboard => self.refresh(),
+            Tab::Observability => self.refresh(),
+            _ => {}
         }
     }
 
-    pub fn next_screen(&mut self) {
-        let all = Screen::all();
-        let idx = all.iter().position(|s| *s == self.screen).unwrap_or(0);
-        self.screen = all[(idx + 1) % all.len()];
+    /// Load data for the current tab + sub-view.
+    pub fn refresh(&mut self) {
+        self.status = None;
+        match self.tab {
+            Tab::Dashboard => {
+                self.send(Req::Dashboard);
+                self.send(Req::Stats);
+            }
+            Tab::Fields => {
+                let name = FIELD_SUBS[self.sub_idx].to_lowercase();
+                if self.sub_idx == 0 {
+                    // Overview — fetch all fields
+                    for f in ["identity", "memory", "agency", "awareness", "reasoning", "simulation", "graph", "core"] {
+                        self.send(Req::FieldDetail(f.to_string()));
+                    }
+                } else {
+                    self.send(Req::FieldDetail(name));
+                }
+            }
+            Tab::Signals => match self.sub_idx {
+                0 => self.send(Req::SignalTypes),
+                1 => self.send(Req::SignalHistory { limit: 100, field: None }),
+                2 => {} // Inject is form-based
+                _ => {}
+            },
+            Tab::Observability => match self.sub_idx {
+                0 => {
+                    self.send(Req::ObservabilityOverview);
+                    self.send(Req::Stats);
+                }
+                1 => self.send(Req::ProcessorMetrics),
+                2 => self.send(Req::SignalMetrics),
+                3 => self.send(Req::CascadeTrace),
+                _ => {}
+            },
+            Tab::System => match self.sub_idx {
+                0 => self.send(Req::Config),
+                1 => self.send(Req::Plugins),
+                _ => {} // Log is local
+            },
+        }
     }
 
-    pub fn prev_screen(&mut self) {
-        let all = Screen::all();
-        let idx = all.iter().position(|s| *s == self.screen).unwrap_or(0);
-        self.screen = all[(idx + all.len() - 1) % all.len()];
+    pub fn apply(&mut self, resp: Resp) {
+        self.inflight = self.inflight.saturating_sub(1);
+        match resp {
+            Resp::Dashboard(d) => {
+                self.health = Some(d.health);
+                self.observability = Some(d.observability);
+            }
+            Resp::Health(h) => self.health = Some(*h),
+            Resp::Stats(s) => self.stats = *s,
+            Resp::SignalTypes(v) => self.signal_types = v,
+            Resp::SignalHistory(v) => {
+                self.history_sel.set_len(v.len());
+                self.signal_history = v;
+            }
+            Resp::ObservabilityOverview(o) => self.observability = Some(*o),
+            Resp::ProcessorMetrics(v) => self.processor_metrics = v,
+            Resp::SignalMetrics(m) => self.signal_metrics = Some(*m),
+            Resp::CascadeTrace(t) => self.cascade_trace = Some(*t),
+            Resp::Capabilities(v) => self.capabilities = v,
+            Resp::Plugins(v) => self.plugins = v,
+            Resp::Config(c) => self.config = Some(*c),
+            Resp::FieldDetail(name, value) => {
+                self.field_details.insert(name, value);
+            }
+            Resp::ActionOk { msg, refresh } => {
+                self.status = Some((msg.clone(), false));
+                self.add_log(&msg);
+                if refresh { self.refresh(); }
+            }
+            Resp::Error(e) => {
+                self.status = Some((e.clone(), true));
+                self.add_log(format!("ERROR: {e}"));
+            }
+        }
     }
 
-    /// Toggle auto-refresh on/off.
-    pub fn toggle_auto_refresh(&mut self) {
-        self.auto_refresh = !self.auto_refresh;
-        self.add_log(format!("Auto-refresh: {}", if self.auto_refresh { "ON" } else { "OFF" }));
+    // ── Key handling ──────────────────────────────────────────────────────
+
+    pub fn on_key(&mut self, key: KeyEvent) {
+        // Overlay consumes keys first
+        match &mut self.overlay {
+            Overlay::Help => { self.overlay = Overlay::None; return; }
+            Overlay::Form(_) => { self.handle_form(key); return; }
+            Overlay::None => {}
+        }
+
+        self.status = None;
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Char('c') if ctrl => self.should_quit = true,
+            KeyCode::Char('?') => self.overlay = Overlay::Help,
+            KeyCode::Char('r') => self.refresh(),
+            KeyCode::Esc => {}
+            KeyCode::Tab => self.switch_tab((self.tab.index() + 1) % TABS.len()),
+            KeyCode::BackTab => self.switch_tab((self.tab.index() + TABS.len() - 1) % TABS.len()),
+            KeyCode::Char(c @ '1'..='5') => self.switch_tab(c as usize - '1' as usize),
+            KeyCode::Char('l') | KeyCode::Right => self.cycle_sub(1),
+            KeyCode::Char('h') | KeyCode::Left => self.cycle_sub(-1),
+            KeyCode::Down | KeyCode::Char('j') => self.cur_sel().next(),
+            KeyCode::Up | KeyCode::Char('k') => self.cur_sel().prev(),
+            KeyCode::Enter => self.on_enter(),
+            KeyCode::Char('a') => self.open_form(FormKind::Ingest),
+            KeyCode::Char('i') if self.tab == Tab::Signals && self.sub_idx == 2 => {}
+            _ => {}
+        }
     }
 
-    /// Set refresh interval in seconds (clamped to 1-30).
-    pub fn set_refresh_interval(&mut self, secs: u64) {
-        let clamped = secs.clamp(1, 30);
-        self.refresh_interval = Duration::from_secs(clamped);
-        self.add_log(format!("Refresh interval: {}s", clamped));
+    fn switch_tab(&mut self, i: usize) {
+        self.tab = Tab::from_index(i);
+        self.sub_idx = 0;
+        self.refresh();
     }
 
-    /// Get current refresh interval in seconds.
-    pub fn refresh_interval_secs(&self) -> u64 {
-        self.refresh_interval.as_secs()
+    fn cycle_sub(&mut self, dir: i32) {
+        let n = self.tab.sub_labels().len() as i32;
+        if n == 0 { return; }
+        self.sub_idx = ((self.sub_idx as i32 + dir).rem_euclid(n)) as usize;
+        self.refresh();
     }
 
-    /// Next field detail (when on Detail screen).
-    pub fn next_detail(&mut self) {
-        self.detail_index = (self.detail_index + 1) % DETAIL_NAMES.len();
-        self.add_log(format!("Detail: {} ({}/{})", DETAIL_NAMES[self.detail_index], self.detail_index + 1, DETAIL_NAMES.len()));
+    fn cur_sel(&mut self) -> &mut Sel {
+        match self.tab {
+            Tab::Signals if self.sub_idx == 1 => &mut self.history_sel,
+            _ => &mut self.history_sel, // fallback
+        }
     }
 
-    /// Previous field detail (when on Detail screen).
-    pub fn prev_detail(&mut self) {
-        self.detail_index = if self.detail_index == 0 {
-            DETAIL_NAMES.len() - 1
-        } else {
-            self.detail_index - 1
+    fn on_enter(&mut self) {
+        // Detail selection handled per-tab
+    }
+
+    fn open_form(&mut self, kind: FormKind) {
+        let form = match kind {
+            FormKind::Ingest => Form {
+                kind,
+                title: "Ingest experience".into(),
+                fields: vec![FormField { label: "content".into(), value: String::new() }],
+                active: 0,
+            },
+            FormKind::Inject => Form {
+                kind,
+                title: "Inject signal".into(),
+                fields: vec![
+                    FormField { label: "signal_type".into(), value: self.inject_signal_type.clone() },
+                    FormField { label: "payload (JSON)".into(), value: "{}".into() },
+                ],
+                active: 0,
+            },
         };
-        self.add_log(format!("Detail: {} ({}/{})", DETAIL_NAMES[self.detail_index], self.detail_index + 1, DETAIL_NAMES.len()));
+        self.overlay = Overlay::Form(form);
+    }
+
+    fn handle_form(&mut self, key: KeyEvent) {
+        // Esc to close
+        if matches!(key.code, KeyCode::Esc) {
+            self.overlay = Overlay::None;
+            return;
+        }
+
+        let submit = key.code == KeyCode::Enter
+            && !matches!(self.overlay, Overlay::Form(Form { kind: FormKind::Ingest, .. }));
+        let ingest_submit = matches!(self.overlay, Overlay::Form(Form { kind: FormKind::Ingest, .. }))
+            && key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL);
+
+        match key.code {
+            KeyCode::Tab => {
+                if let Overlay::Form(f) = &mut self.overlay {
+                    f.active = (f.active + 1) % f.fields.len();
+                }
+                return;
+            }
+            KeyCode::BackTab => {
+                if let Overlay::Form(f) = &mut self.overlay {
+                    f.active = (f.active + f.fields.len() - 1) % f.fields.len();
+                }
+                return;
+            }
+            KeyCode::Backspace => {
+                if let Overlay::Form(f) = &mut self.overlay {
+                    f.fields[f.active].value.pop();
+                }
+                return;
+            }
+            KeyCode::Char(c) => {
+                if !(submit || ingest_submit) {
+                    if let Overlay::Form(f) = &mut self.overlay {
+                        f.fields[f.active].value.push(c);
+                    }
+                    return;
+                }
+            }
+            KeyCode::Enter => {
+                if let Overlay::Form(f) = &mut self.overlay {
+                    if matches!(f.kind, FormKind::Ingest) {
+                        f.fields[0].value.push('\n');
+                        return;
+                    }
+                }
+            }
+            _ => return,
+        }
+
+        if submit || ingest_submit {
+            self.submit_form();
+        }
+    }
+
+    fn submit_form(&mut self) {
+        let form = match std::mem::replace(&mut self.overlay, Overlay::None) {
+            Overlay::Form(f) => f,
+            _ => return,
+        };
+        match form.kind {
+            FormKind::Ingest => {
+                let content = form.fields[0].value.trim().to_string();
+                if !content.is_empty() {
+                    self.send(Req::Ingest(content));
+                    self.add_log("Sent ingest request");
+                }
+            }
+            FormKind::Inject => {
+                let signal_type = form.fields[0].value.trim().to_string();
+                let payload: serde_json::Value = serde_json::from_str(form.fields[1].value.trim())
+                    .unwrap_or(serde_json::json!({}));
+                if !signal_type.is_empty() {
+                    self.inject_signal_type = signal_type.clone();
+                    self.send(Req::Inject { signal_type, payload });
+                    self.add_log("Sent signal inject");
+                }
+            }
+        }
     }
 }
