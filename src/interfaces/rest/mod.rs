@@ -212,26 +212,20 @@ pub fn router(state: ApiState) -> Router {
         .with_state(state)
 }
 
-// Global rate limiter instance (initialized on first access).
+// Global rate limiter — shared atomic between try_acquire and the refill loop.
+static RATE_TOKENS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(10_000);
 static RATE_LIMITER: std::sync::LazyLock<RateLimiter> =
     std::sync::LazyLock::new(|| RateLimiter::new(10_000, 100));
 
 /// Simple token-bucket rate limiter.
 ///
-/// Uses an atomic counter and a background task that refills at the
+/// Uses a static atomic counter and a background task that refills at the
 /// configured rate. Thread-safe and lock-free on the fast path.
-struct RateLimiter {
-    tokens: std::sync::atomic::AtomicU64,
-    #[allow(dead_code)]
-    max_tokens: u64,
-}
+struct RateLimiter;
 
 impl RateLimiter {
     fn new(max_tokens: u64, refill_per_sec: u64) -> Self {
-        let tokens = std::sync::atomic::AtomicU64::new(max_tokens);
-        // Spawn background refill task using a leaked atomic for the async context
-        let leaked: &'static std::sync::atomic::AtomicU64 =
-            Box::leak(Box::new(std::sync::atomic::AtomicU64::new(max_tokens)));
+        RATE_TOKENS.store(max_tokens, std::sync::atomic::Ordering::Relaxed);
         let max = max_tokens;
         tokio::spawn(async move {
             let interval_ms = 1000u64 / refill_per_sec.max(1);
@@ -240,11 +234,11 @@ impl RateLimiter {
             loop {
                 interval.tick().await;
                 loop {
-                    let current = leaked.load(std::sync::atomic::Ordering::Relaxed);
+                    let current = RATE_TOKENS.load(std::sync::atomic::Ordering::Relaxed);
                     if current >= max {
                         break;
                     }
-                    if leaked.compare_exchange(
+                    if RATE_TOKENS.compare_exchange(
                         current, current + 1,
                         std::sync::atomic::Ordering::Relaxed,
                         std::sync::atomic::Ordering::Relaxed,
@@ -254,16 +248,16 @@ impl RateLimiter {
                 }
             }
         });
-        RateLimiter { tokens, max_tokens }
+        RateLimiter
     }
 
     fn try_acquire(&self) -> bool {
         loop {
-            let current = self.tokens.load(std::sync::atomic::Ordering::Relaxed);
+            let current = RATE_TOKENS.load(std::sync::atomic::Ordering::Relaxed);
             if current == 0 {
                 return false;
             }
-            if self.tokens.compare_exchange(
+            if RATE_TOKENS.compare_exchange(
                 current, current - 1,
                 std::sync::atomic::Ordering::Relaxed,
                 std::sync::atomic::Ordering::Relaxed,
